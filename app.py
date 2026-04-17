@@ -1159,7 +1159,7 @@ if __name__ == '__main__':
     try:
         port = int(os.environ.get('PORT', 5000))
         print(f'  🚀 السيرفر يعمل على المنفذ: {port}')
-        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+        app.run(host='0.0.0.0', port=port, debug=False)
     except KeyboardInterrupt:
         print('\n👋 تم إيقاف السيرفر')
         db_conn.close()
