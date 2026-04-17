@@ -3,7 +3,7 @@
 
 """
 SELVA & OTP - Telegram Message Viewer with Permanent Archive
-معدل للعمل على Railway مع مزامنة تلقائية
+معدل للعمل على Railway مع ملف جلسة محفوظ
 جميع الرسائل تبقى محفوظة حتى لو حذفت من القناة
 """
 
@@ -18,14 +18,13 @@ from flask import Flask, jsonify, request, make_response
 from telethon import TelegramClient, errors
 
 # ============================================================
-#                  الإعدادات - استبدل ببياناتك
+#                  الإعدادات
 # ============================================================
 
 API_ID = 33437938
 API_HASH = '4aa02cced89e0eb1c509ac1f5336d5b7'
 CHANNEL_ID = -1003850394406
-AUTH_TYPE = 'user'
-BOT_TOKEN = ''
+SESSION_NAME = 'selva_user_session'  # اسم ملف الجلسة بدون .session
 
 # ============================================================
 #                      قاعدة البيانات
@@ -825,7 +824,7 @@ def get_messages_page(lang='ar'):
         </button>
         <div class="auto-refresh">
             <label>
-                <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()"> 
+                <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()" checked> 
                 <span>{t['auto_refresh']}</span>
             </label>
         </div>
@@ -965,10 +964,8 @@ def get_messages_page(lang='ar'):
 
         window.onload = () => {{
             loadArchive();
-            document.getElementById('autoRefresh').checked = true;
             toggleAutoRefresh();
             
-            // محاولة مزامنة تلقائية بعد التحميل
             setTimeout(() => {{
                 fetch('/api/sync').then(r => r.json()).then(d => {{
                     if (d.success && d.new_messages > 0) {{
@@ -1000,31 +997,34 @@ def get_language():
     lang = request.cookies.get('language', 'ar')
     return lang if lang in ['ar', 'en'] else 'ar'
 
-async def login_user():
+async def login_with_session():
+    """تسجيل الدخول باستخدام ملف الجلسة المحفوظ"""
     global client
-    print('📱 جاري تسجيل الدخول...')
-    await client.start()
-    me = await client.get_me()
-    print(f'✅ تم تسجيل الدخول كـ: {me.first_name}')
-
-async def login_bot():
-    global client
-    print('🤖 جاري تسجيل الدخول كبوت...')
-    await client.start(bot_token=BOT_TOKEN)
-    me = await client.get_me()
-    print(f'✅ تم تسجيل الدخول كبوت: @{me.username}')
+    print('📱 جاري تسجيل الدخول بملف الجلسة...')
+    
+    try:
+        await client.start()
+        me = await client.get_me()
+        print(f'✅ تم تسجيل الدخول كـ: {me.first_name} (@{me.username})')
+        return True
+    except Exception as e:
+        print(f'❌ فشل تسجيل الدخول: {e}')
+        return False
 
 def init_telegram():
+    """تهيئة عميل تيليجرام مع ملف الجلسة"""
     global client, loop
     if client is None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        session_name = 'selva_user_session' if AUTH_TYPE == 'user' else 'selva_bot_session'
-        client = TelegramClient(session_name, API_ID, API_HASH, loop=loop)
-        if AUTH_TYPE == 'user':
-            loop.run_until_complete(login_user())
-        else:
-            loop.run_until_complete(login_bot())
+        
+        print(f'📁 البحث عن ملف الجلسة: {SESSION_NAME}.session')
+        
+        client = TelegramClient(SESSION_NAME, API_ID, API_HASH, loop=loop)
+        
+        success = loop.run_until_complete(login_with_session())
+        if not success:
+            raise Exception("فشل تسجيل الدخول - تأكد من صحة ملف الجلسة")
 
 async def fetch_and_save_messages():
     """جلب الرسائل من تيليجرام وحفظها في الأرشيف"""
@@ -1039,7 +1039,6 @@ async def fetch_and_save_messages():
                 if save_message_to_db(msg.id, msg.message, msg.date.isoformat()):
                     count += 1
         
-        # تحديث وقت آخر مزامنة
         cursor = db_conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO stats (key, value) 
@@ -1148,8 +1147,8 @@ def delayed_sync():
             print(f'❌ خطأ في المزامنة: {e}')
 
 if __name__ == '__main__':
-    init_telegram()
     print_banner()
+    init_telegram()
     
     # تشغيل المزامنة الأولية في خلفية منفصلة
     sync_thread = threading.Thread(target=delayed_sync)
@@ -1159,7 +1158,7 @@ if __name__ == '__main__':
     try:
         port = int(os.environ.get('PORT', 5000))
         print(f'  🚀 السيرفر يعمل على المنفذ: {port}')
-        app.run(host='0.0.0.0', port=port, debug=False)
+        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
     except KeyboardInterrupt:
         print('\n👋 تم إيقاف السيرفر')
         db_conn.close()
