@@ -3,26 +3,29 @@
 
 """
 SELVA & OTP - Telegram Message Viewer with Permanent Archive
+معدل للعمل على Railway مع مزامنة تلقائية
 جميع الرسائل تبقى محفوظة حتى لو حذفت من القناة
 """
 
 import sys
 import asyncio
 import sqlite3
-import json
+import os
+import threading
+import time
 from datetime import datetime
 from flask import Flask, jsonify, request, make_response
-from telethon import TelegramClient, errors, events
+from telethon import TelegramClient, errors
 
 # ============================================================
 #                  الإعدادات - استبدل ببياناتك
 # ============================================================
 
-API_ID = 33437938  # ← استبدل بالـ api_id الخاص بك
-API_HASH = '4aa02cced89e0eb1c509ac1f5336d5b7' 
-CHANNEL_ID = -1003850394406  # ← تأكد من الإيدي الصحيح
-AUTH_TYPE = 'user'  # ← 'user' أو 'bot'
-BOT_TOKEN = ''  # ← ضع توكن البوت إذا اخترت 'bot'
+API_ID = 33437938
+API_HASH = '4aa02cced89e0eb1c509ac1f5336d5b7'
+CHANNEL_ID = -1003850394406
+AUTH_TYPE = 'user'
+BOT_TOKEN = ''
 
 # ============================================================
 #                      قاعدة البيانات
@@ -30,12 +33,13 @@ BOT_TOKEN = ''  # ← ضع توكن البوت إذا اخترت 'bot'
 
 def init_database():
     """تهيئة قاعدة البيانات لتخزين الرسائل بشكل دائم"""
-    conn = sqlite3.connect('messages_archive.db', check_same_thread=False)
+    db_path = '/data/messages_archive.db' if os.path.exists('/data') else 'messages_archive.db'
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             message_id INTEGER UNIQUE,
             text TEXT,
             date TEXT,
@@ -44,7 +48,6 @@ def init_database():
         )
     ''')
     
-    # جدول للإحصائيات
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS stats (
             key TEXT PRIMARY KEY,
@@ -69,19 +72,6 @@ def save_message_to_db(msg_id, text, date):
         return True
     except Exception as e:
         print(f"خطأ في حفظ الرسالة: {e}")
-        return False
-
-def mark_message_deleted(msg_id):
-    """تحديد رسالة كمحذوفة (لكن تبقى في الأرشيف)"""
-    try:
-        cursor = db_conn.cursor()
-        cursor.execute('''
-            UPDATE messages SET is_deleted = 1 
-            WHERE message_id = ?
-        ''', (msg_id,))
-        db_conn.commit()
-        return True
-    except:
         return False
 
 def get_all_messages(limit=100):
@@ -110,20 +100,6 @@ def get_message_count():
     cursor.execute('SELECT COUNT(*) FROM messages')
     return cursor.fetchone()[0]
 
-def sync_messages_from_telegram(messages):
-    """مزامنة الرسائل من تيليجرام إلى قاعدة البيانات"""
-    for msg in messages:
-        if msg.message:
-            save_message_to_db(msg.id, msg.message, msg.date.isoformat())
-    
-    # تحديث الإحصائية
-    cursor = db_conn.cursor()
-    cursor.execute('''
-        INSERT OR REPLACE INTO stats (key, value) 
-        VALUES ('last_sync', ?)
-    ''', (datetime.now().isoformat(),))
-    db_conn.commit()
-
 # ============================================================
 #                      النصوص متعددة اللغات
 # ============================================================
@@ -144,14 +120,15 @@ TEXTS = {
         'messages': 'رسالة',
         'copy': 'نسخ',
         'copied': 'تم النسخ!',
-        'no_messages': 'لا توجد رسائل في الأرشيف',
+        'no_messages': 'لا توجد رسائل في الأرشيف - اضغط مزامنة الآن',
         'loading': 'جاري تحميل الأرشيف...',
         'error': 'فشل الاتصال بالسيرفر',
         'footer': 'SELVA SYSTEM | الأرشيف الدائم',
         'archived': '📦 مؤرشفة',
         'deleted': '🗑️ محذوفة من القناة',
-        'total_archived': 'إجمالي الرسائل المؤرشفة',
-        'sync_now': 'مزامنة الآن'
+        'sync_now': 'مزامنة الآن',
+        'syncing': 'جاري المزامنة...',
+        'sync_success': 'تمت المزامنة بنجاح!'
     },
     'en': {
         'select_language': 'Please select a language ✨🪐',
@@ -168,14 +145,15 @@ TEXTS = {
         'messages': 'Messages',
         'copy': 'Copy',
         'copied': 'Copied!',
-        'no_messages': 'No messages in archive',
+        'no_messages': 'No messages in archive - Click Sync Now',
         'loading': 'Loading archive...',
         'error': 'Failed to connect',
         'footer': 'SELVA SYSTEM | Permanent Archive',
         'archived': '📦 Archived',
         'deleted': '🗑️ Deleted from channel',
-        'total_archived': 'Total Archived Messages',
-        'sync_now': 'Sync Now'
+        'sync_now': 'Sync Now',
+        'syncing': 'Syncing...',
+        'sync_success': 'Sync Successful!'
     }
 }
 
@@ -934,21 +912,27 @@ def get_messages_page(lang='ar'):
         }}
 
         async function syncNow() {{
-            const syncBtn = document.querySelector('.sync-btn i');
-            const originalIcon = syncBtn.className;
-            syncBtn.className = 'fas fa-spinner fa-pulse';
+            const syncBtn = document.querySelector('.sync-btn');
+            const originalText = syncBtn.innerHTML;
+            syncBtn.innerHTML = '<i class="fas fa-spinner fa-pulse"></i> {t["syncing"]}';
             
             try {{
                 const response = await fetch('/api/sync');
                 const data = await response.json();
                 
                 if (data.success) {{
+                    syncBtn.innerHTML = '<i class="fas fa-check"></i> {t["sync_success"]}';
+                    setTimeout(() => {{
+                        syncBtn.innerHTML = originalText;
+                    }}, 2000);
                     loadArchive();
+                }} else {{
+                    alert('فشل المزامنة: ' + (data.error || 'خطأ غير معروف'));
+                    syncBtn.innerHTML = originalText;
                 }}
             }} catch (error) {{
                 alert('فشل المزامنة');
-            }} finally {{
-                syncBtn.className = originalIcon;
+                syncBtn.innerHTML = originalText;
             }}
         }}
 
@@ -983,6 +967,15 @@ def get_messages_page(lang='ar'):
             loadArchive();
             document.getElementById('autoRefresh').checked = true;
             toggleAutoRefresh();
+            
+            // محاولة مزامنة تلقائية بعد التحميل
+            setTimeout(() => {{
+                fetch('/api/sync').then(r => r.json()).then(d => {{
+                    if (d.success && d.new_messages > 0) {{
+                        loadArchive();
+                    }}
+                }});
+            }}, 1000);
         }};
 
         window.addEventListener('beforeunload', () => {{
@@ -1009,17 +1002,17 @@ def get_language():
 
 async def login_user():
     global client
-    print('\033[93m📱 جاري تسجيل الدخول...\033[0m')
+    print('📱 جاري تسجيل الدخول...')
     await client.start()
     me = await client.get_me()
-    print(f'\033[92m✅ تم تسجيل الدخول كـ: {me.first_name}\033[0m')
+    print(f'✅ تم تسجيل الدخول كـ: {me.first_name}')
 
 async def login_bot():
     global client
-    print('\033[93m🤖 جاري تسجيل الدخول كبوت...\033[0m')
+    print('🤖 جاري تسجيل الدخول كبوت...')
     await client.start(bot_token=BOT_TOKEN)
     me = await client.get_me()
-    print(f'\033[92m✅ تم تسجيل الدخول كبوت: @{me.username}\033[0m')
+    print(f'✅ تم تسجيل الدخول كبوت: @{me.username}')
 
 def init_telegram():
     global client, loop
@@ -1056,6 +1049,7 @@ async def fetch_and_save_messages():
         
         return {'success': True, 'new_messages': count}
     except Exception as e:
+        print(f"خطأ في المزامنة: {e}")
         return {'success': False, 'error': str(e)}
 
 # ============================================================
@@ -1124,31 +1118,50 @@ def api_sync():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
+@app.route('/health')
+def health():
+    return jsonify({'status': 'ok', 'messages': get_message_count()})
+
 def print_banner():
-    print('\033[95m╔══════════════════════════════════════════════════════════╗\033[0m')
-    print('\033[95m║     SELVA & OTP - Permanent Archive System               ║\033[0m')
-    print('\033[95m║         جميع الرسائل تبقى محفوظة للأبد 🗄️                 ║\033[0m')
-    print('\033[95m╚══════════════════════════════════════════════════════════╝\033[0m')
-    print('\033[96m  🚀 http://127.0.0.1:5000\033[0m')
-    print('\033[92m  📦 قاعدة البيانات: messages_archive.db\033[0m')
+    print('=' * 60)
+    print('     SELVA & OTP - Permanent Archive System')
+    print('         جميع الرسائل تبقى محفوظة للأبد 🗄️')
+    print('=' * 60)
+
+# ============================================================
+#                      تشغيل تلقائي على Railway
+# ============================================================
+
+def delayed_sync():
+    """تشغيل المزامنة الأولية بعد 5 ثواني من بدء السيرفر"""
+    time.sleep(5)
+    global loop
+    if loop:
+        print('📥 جاري المزامنة التلقائية...')
+        try:
+            result = loop.run_until_complete(fetch_and_save_messages())
+            if result['success']:
+                print(f'✅ تمت المزامنة! {result["new_messages"]} رسالة جديدة')
+            else:
+                print(f'❌ فشلت المزامنة: {result.get("error")}')
+        except Exception as e:
+            print(f'❌ خطأ في المزامنة: {e}')
 
 if __name__ == '__main__':
-    if API_ID == 12345678:
-        print('\033[91m❌ خطأ: قم بتعيين api_id و api_hash من my.telegram.org\033[0m')
-        sys.exit(1)
-    
     init_telegram()
     print_banner()
     
-    # مزامنة أولية عند التشغيل
-    print('\033[93m📥 جاري مزامنة الرسائل الأولية...\033[0m')
-    loop.run_until_complete(fetch_and_save_messages())
-    print('\033[92m✅ تمت المزامنة الأولية!\033[0m')
+    # تشغيل المزامنة الأولية في خلفية منفصلة
+    sync_thread = threading.Thread(target=delayed_sync)
+    sync_thread.daemon = True
+    sync_thread.start()
     
     try:
-        app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+        port = int(os.environ.get('PORT', 5000))
+        print(f'  🚀 السيرفر يعمل على المنفذ: {port}')
+        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
     except KeyboardInterrupt:
-        print('\n\033[91m👋 تم إيقاف السيرفر\033[0m')
+        print('\n👋 تم إيقاف السيرفر')
         db_conn.close()
         if loop:
             loop.close()
