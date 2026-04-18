@@ -1,3 +1,9 @@
 flask==3.0.0
 telethon==1.36.0
-gunicorn==23.0.0
+werkzeug==3.0.1
+python-dotenv==1.0.0
+requests==2.31.0
+cryptography==41.0.7
+pyaes==1.6.1
+rsa==4.9
+async-timeout==4.0.3
