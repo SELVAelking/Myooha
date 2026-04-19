@@ -614,308 +614,173 @@ async def fetch_and_save_messages():
 #                      الأنماط الأساسية
 # ============================================================
 
-def get_base_style(theme='dark'):
-    if theme == 'dark':
-        return '''
-        <style>
-            * { margin: 0; padding: 0; box-sizing: border-box; }
-            body {
-                background: linear-gradient(135deg, #0a0a1a 0%, #0d0d2b 50%, #050510 100%);
-                font-family: 'Segoe UI', 'Cairo', sans-serif;
-                color: #e0e0ff;
-                min-height: 100vh;
-            }
-            .header {
-                background: rgba(10, 5, 20, 0.9);
-                backdrop-filter: blur(5px);
-                padding: 15px 20px;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                border-bottom: 1px solid #2a0a4a;
-                position: sticky;
-                top: 0;
-                z-index: 100;
-            }
-            h1, h2, h3 { color: #c77dff; text-shadow: 0 0 10px #9d4edd; }
-            .container { padding: 20px; max-width: 1200px; margin: 0 auto; }
-            .card {
-                background: rgba(15, 8, 30, 0.7);
-                backdrop-filter: blur(5px);
-                padding: 20px;
-                border-radius: 20px;
-                border: 1px solid #7b2cbf;
-                margin-bottom: 20px;
-            }
-            input, select, textarea {
-                width: 100%;
-                padding: 12px;
-                margin: 8px 0;
-                background: rgba(0,0,0,0.3);
-                border: 1px solid #7b2cbf;
-                border-radius: 10px;
-                color: white;
-                font-size: 1rem;
-            }
-            button, .btn {
-                padding: 12px 25px;
-                background: #9d4edd;
-                border: none;
-                border-radius: 10px;
-                color: white;
-                font-size: 1rem;
-                font-weight: bold;
-                cursor: pointer;
-                transition: all 0.3s;
-                text-decoration: none;
-                display: inline-block;
-                margin: 5px;
-            }
-            button:hover, .btn:hover { background: #c77dff; box-shadow: 0 0 20px #9d4edd; }
-            .btn-danger { background: #ff4444; }
-            .btn-success { background: #00b894; }
-            .btn-warning { background: #fdcb6e; color: #2d3436; }
-            table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-            th, td { padding: 12px; text-align: right; border-bottom: 1px solid #5a189a; }
-            th { background: rgba(157, 78, 221, 0.2); color: #c77dff; }
-            .sidebar {
-                position: fixed;
-                top: 0;
-                right: -280px;
-                width: 260px;
-                height: 100vh;
-                background: rgba(15, 8, 30, 0.95);
-                border-left: 1px solid #9d4edd;
-                transition: right 0.3s;
-                z-index: 200;
-                overflow-y: auto;
-                padding: 20px;
-            }
-            .sidebar.active { right: 0; }
-            .sidebar-item {
-                display: block;
-                padding: 12px;
-                color: #e0aaff;
-                text-decoration: none;
-                border-radius: 10px;
-                margin-bottom: 8px;
-            }
-            .sidebar-item:hover { background: rgba(157, 78, 221, 0.2); }
-            .badge { display: inline-block; padding: 4px 8px; border-radius: 20px; font-size: 0.75rem; }
-            .badge-success { background: #00b894; color: white; }
-            .badge-danger { background: #ff4444; color: white; }
-            .notification-badge {
-                background: #ff4444;
-                color: white;
-                border-radius: 50%;
-                padding: 2px 6px;
-                font-size: 0.7rem;
-                margin-right: 5px;
-            }
-            .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px; }
-            .stat-card {
-                background: rgba(20, 10, 40, 0.6);
-                padding: 15px;
-                border-radius: 15px;
-                border: 1px solid #5a189a;
-                text-align: center;
-            }
-            .stat-card .number { font-size: 2rem; color: #e0aaff; }
-            .menu-btn { font-size: 1.5rem; cursor: pointer; color: #c77dff; background: none; border: none; }
-            .overlay {
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                background: rgba(0,0,0,0.5);
-                z-index: 150;
-                display: none;
-            }
-            .overlay.active { display: block; }
-            .sidebar-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 20px;
-                padding-bottom: 15px;
-                border-bottom: 1px solid #5a189a;
-            }
-            .close-btn { background: none; border: none; color: #c77dff; font-size: 1.5rem; cursor: pointer; }
-            .logout-btn, .back-btn {
-                background: #9d4edd;
-                color: white;
-                padding: 8px 15px;
-                border-radius: 10px;
-                text-decoration: none;
-                font-size: 0.9rem;
-            }
-            .chat-container { display: flex; flex-direction: column; height: calc(100vh - 150px); }
-            .messages-area { flex: 1; overflow-y: auto; padding: 20px; }
-            .input-area { display: flex; gap: 10px; padding: 20px; background: rgba(15, 8, 30, 0.5); }
-            .input-area input { flex: 1; }
-            .status-active { color: #00b894; }
-            .status-inactive { color: #ff4444; }
-            .queue-badge {
-                background: #fdcb6e;
-                color: #2d3436;
-                padding: 2px 8px;
-                border-radius: 20px;
-                font-size: 0.7rem;
-                margin-left: 10px;
-            }
-        </style>
-        '''
-    else:
-        return '''
-        <style>
-            * { margin: 0; padding: 0; box-sizing: border-box; }
-            body {
-                background: linear-gradient(135deg, #f0f0f5 0%, #e8e8ff 50%, #d5d5ff 100%);
-                font-family: 'Segoe UI', 'Cairo', sans-serif;
-                color: #1a1a2e;
-                min-height: 100vh;
-            }
-            .header {
-                background: rgba(255, 255, 255, 0.9);
-                backdrop-filter: blur(5px);
-                padding: 15px 20px;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                border-bottom: 1px solid #9d4edd;
-                position: sticky;
-                top: 0;
-                z-index: 100;
-            }
-            h1, h2, h3 { color: #5a189a; }
-            .container { padding: 20px; max-width: 1200px; margin: 0 auto; }
-            .card {
-                background: rgba(255, 255, 255, 0.7);
-                backdrop-filter: blur(5px);
-                padding: 20px;
-                border-radius: 20px;
-                border: 1px solid #9d4edd;
-                margin-bottom: 20px;
-            }
-            input, select, textarea {
-                width: 100%;
-                padding: 12px;
-                margin: 8px 0;
-                background: rgba(255, 255, 255, 0.8);
-                border: 1px solid #9d4edd;
-                border-radius: 10px;
-                color: #1a1a2e;
-                font-size: 1rem;
-            }
-            button, .btn {
-                padding: 12px 25px;
-                background: #7b2cbf;
-                border: none;
-                border-radius: 10px;
-                color: white;
-                font-size: 1rem;
-                font-weight: bold;
-                cursor: pointer;
-                transition: all 0.3s;
-                text-decoration: none;
-                display: inline-block;
-                margin: 5px;
-            }
-            button:hover, .btn:hover { background: #9d4edd; }
-            .btn-danger { background: #ff4444; }
-            .btn-success { background: #00b894; }
-            table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-            th, td { padding: 12px; text-align: right; border-bottom: 1px solid #9d4edd; }
-            th { background: rgba(157, 78, 221, 0.1); color: #5a189a; }
-            .sidebar {
-                position: fixed;
-                top: 0;
-                right: -280px;
-                width: 260px;
-                height: 100vh;
-                background: rgba(255, 255, 255, 0.95);
-                border-left: 1px solid #9d4edd;
-                transition: right 0.3s;
-                z-index: 200;
-                overflow-y: auto;
-                padding: 20px;
-            }
-            .sidebar.active { right: 0; }
-            .sidebar-item {
-                display: block;
-                padding: 12px;
-                color: #5a189a;
-                text-decoration: none;
-                border-radius: 10px;
-                margin-bottom: 8px;
-            }
-            .sidebar-item:hover { background: rgba(157, 78, 221, 0.1); }
-            .badge { display: inline-block; padding: 4px 8px; border-radius: 20px; font-size: 0.75rem; }
-            .badge-success { background: #00b894; color: white; }
-            .badge-danger { background: #ff4444; color: white; }
-            .notification-badge {
-                background: #ff4444;
-                color: white;
-                border-radius: 50%;
-                padding: 2px 6px;
-                font-size: 0.7rem;
-                margin-right: 5px;
-            }
-            .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px; }
-            .stat-card {
-                background: rgba(255, 255, 255, 0.6);
-                padding: 15px;
-                border-radius: 15px;
-                border: 1px solid #9d4edd;
-                text-align: center;
-            }
-            .stat-card .number { font-size: 2rem; color: #5a189a; }
-            .menu-btn { font-size: 1.5rem; cursor: pointer; color: #5a189a; background: none; border: none; }
-            .overlay {
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                background: rgba(0,0,0,0.3);
-                z-index: 150;
-                display: none;
-            }
-            .overlay.active { display: block; }
-            .sidebar-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 20px;
-                padding-bottom: 15px;
-                border-bottom: 1px solid #9d4edd;
-            }
-            .close-btn { background: none; border: none; color: #5a189a; font-size: 1.5rem; cursor: pointer; }
-            .logout-btn, .back-btn {
-                background: #7b2cbf;
-                color: white;
-                padding: 8px 15px;
-                border-radius: 10px;
-                text-decoration: none;
-                font-size: 0.9rem;
-            }
-            .chat-container { display: flex; flex-direction: column; height: calc(100vh - 150px); }
-            .messages-area { flex: 1; overflow-y: auto; padding: 20px; }
-            .input-area { display: flex; gap: 10px; padding: 20px; background: rgba(0,0,0,0.05); }
-            .input-area input { flex: 1; }
-            .status-active { color: #00b894; }
-            .status-inactive { color: #ff4444; }
-            .queue-badge {
-                background: #fdcb6e;
-                color: #2d3436;
-                padding: 2px 8px;
-                border-radius: 20px;
-                font-size: 0.7rem;
-                margin-left: 10px;
-            }
-        </style>
-        '''
+def get_base_style(theme='light'):  # خليتها light دايمًا
+    # لو عايز تجبرها على الأبيض دائمًا، ممكن ترجع الـ Light Mode مباشرة
+    return '''
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #f8f9fc;
+            font-family: 'Segoe UI', 'Cairo', sans-serif;
+            color: #1a1a2e;
+            min-height: 100vh;
+        }
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(8px);
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #e0d4f5;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.02);
+        }
+        h1, h2, h3 { color: #4a1d6e; font-weight: 600; }
+        .container { padding: 20px; max-width: 1200px; margin: 0 auto; }
+        .card {
+            background: #ffffff;
+            padding: 20px;
+            border-radius: 24px;
+            border: 1px solid #ede4f5;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 20px rgba(157, 78, 221, 0.04);
+        }
+        input, select, textarea {
+            width: 100%;
+            padding: 12px 16px;
+            margin: 8px 0;
+            background: #ffffff;
+            border: 1.5px solid #e2d5f0;
+            border-radius: 16px;
+            color: #1a1a2e;
+            font-size: 1rem;
+        }
+        input:focus, select:focus, textarea:focus {
+            border-color: #9d4edd;
+            outline: none;
+            background: #fdfaff;
+        }
+        button, .btn {
+            padding: 12px 25px;
+            background: #9d4edd;
+            border: none;
+            border-radius: 40px;
+            color: white;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-block;
+            margin: 5px;
+            box-shadow: 0 6px 12px rgba(157, 78, 221, 0.2);
+        }
+        button:hover, .btn:hover { background: #7b2cbf; box-shadow: 0 10px 18px rgba(157, 78, 221, 0.3); }
+        .btn-danger { background: #ff5e5e; box-shadow: 0 6px 12px rgba(255,94,94,0.2); }
+        .btn-success { background: #2cc185; box-shadow: 0 6px 12px rgba(44,193,133,0.2); }
+        .btn-warning { background: #fdb44b; color: #1a1a2e; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 12px; text-align: right; border-bottom: 1px solid #e9ddf5; }
+        th { background: #f6f0ff; color: #5a189a; font-weight: 600; }
+        .sidebar {
+            position: fixed;
+            top: 0;
+            right: -280px;
+            width: 260px;
+            height: 100vh;
+            background: rgba(255, 255, 255, 0.98);
+            border-left: 1px solid #d9c2f0;
+            transition: right 0.3s;
+            z-index: 200;
+            overflow-y: auto;
+            padding: 20px;
+            box-shadow: -4px 0 20px rgba(0,0,0,0.02);
+        }
+        .sidebar.active { right: 0; }
+        .sidebar-item {
+            display: block;
+            padding: 12px 15px;
+            color: #4a1d6e;
+            text-decoration: none;
+            border-radius: 40px;
+            margin-bottom: 8px;
+            font-weight: 500;
+            background: #ffffff;
+            border: 1px solid #f0e8fa;
+        }
+        .sidebar-item:hover { background: #f5edff; border-color: #9d4edd; }
+        .badge { display: inline-block; padding: 4px 10px; border-radius: 40px; font-size: 0.75rem; font-weight: 600; }
+        .badge-success { background: #2cc185; color: white; }
+        .badge-danger { background: #ff5e5e; color: white; }
+        .notification-badge {
+            background: #ff5e5e;
+            color: white;
+            border-radius: 40px;
+            padding: 2px 8px;
+            font-size: 0.7rem;
+            margin-right: 5px;
+        }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .stat-card {
+            background: #ffffff;
+            padding: 20px 15px;
+            border-radius: 24px;
+            border: 1px solid #ede4f5;
+            text-align: center;
+            box-shadow: 0 4px 10px rgba(157, 78, 221, 0.02);
+        }
+        .stat-card .number { font-size: 2.2rem; font-weight: 700; color: #5a189a; }
+        .menu-btn { font-size: 1.5rem; cursor: pointer; color: #5a189a; background: none; border: none; }
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.2);
+            z-index: 150;
+            display: none;
+        }
+        .overlay.active { display: block; }
+        .sidebar-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #e0d4f5;
+        }
+        .close-btn { background: none; border: none; color: #5a189a; font-size: 1.5rem; cursor: pointer; }
+        .logout-btn, .back-btn {
+            background: #f3ebfc;
+            color: #4a1d6e;
+            padding: 8px 18px;
+            border-radius: 40px;
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            border: 1px solid #d9c2f0;
+        }
+        .chat-container { display: flex; flex-direction: column; height: calc(100vh - 150px); }
+        .messages-area { flex: 1; overflow-y: auto; padding: 20px; background: #fcfaff; border-radius: 24px; }
+        .input-area { display: flex; gap: 10px; padding: 20px; background: #ffffff; border-radius: 40px; margin-top: 10px; border: 1px solid #ede4f5; }
+        .input-area input { flex: 1; }
+        .status-active { color: #2cc185; font-weight: 600; }
+        .status-inactive { color: #ff5e5e; }
+        .queue-badge {
+            background: #fdb44b;
+            color: #1a1a2e;
+            padding: 2px 10px;
+            border-radius: 40px;
+            font-size: 0.7rem;
+            margin-left: 10px;
+            font-weight: 600;
+        }
+    </style>
+    '''
 
 # ============================================================
 #                      قاموس اللغات
@@ -1204,7 +1069,6 @@ def get_text(key, lang=None):
 def get_login_page(error=None, lang='ar'):
     t = LANGUAGES[lang]
     error_html = f'<div class="error">{error}</div>' if error else ''
-    theme = session.get('theme', 'dark')
     
     return f'''
 <!DOCTYPE html>
@@ -1217,88 +1081,169 @@ def get_login_page(error=None, lang='ar'):
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
-            background: {'linear-gradient(135deg, #0a0a1a 0%, #0d0d2b 50%, #050510 100%)' if theme == 'dark' else 'linear-gradient(135deg, #f0f0f5 0%, #e8e8ff 50%, #d5d5ff 100%)'};
+            background: #ffffff;
             font-family: 'Segoe UI', 'Cairo', sans-serif;
-            color: {'#e0e0ff' if theme == 'dark' else '#1a1a2e'};
+            color: #1a1a2e;
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
         }}
         .login-container {{
-            background: {'rgba(15, 8, 30, 0.8)' if theme == 'dark' else 'rgba(255, 255, 255, 0.8)'};
-            backdrop-filter: blur(10px);
+            background: #ffffff;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.08);
             padding: 30px;
-            border-radius: 20px;
-            border: 1px solid #9d4edd;
+            border-radius: 28px;
+            border: 1px solid rgba(157, 78, 221, 0.15);
             width: 90%;
             max-width: 400px;
         }}
-        h1 {{ text-align: center; color: #c77dff; margin-bottom: 10px; }}
-        .lang-selector {{ display: flex; justify-content: center; gap: 10px; margin-bottom: 20px; }}
+        .logo-circle {{
+            width: 90px;
+            height: 90px;
+            margin: 0 auto 20px;
+            border-radius: 50%;
+            background: #f8f5ff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 2px solid #9d4edd;
+            padding: 8px;
+        }}
+        .logo-circle img {{
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
+        }}
+        h1 {{ 
+            text-align: center; 
+            color: #5a189a; 
+            margin-bottom: 10px; 
+            font-weight: 600;
+        }}
+        .lang-selector {{ 
+            display: flex; 
+            justify-content: center; 
+            gap: 10px; 
+            margin-bottom: 20px; 
+        }}
         .lang-btn {{
             background: none;
             border: 1px solid #9d4edd;
-            color: #c77dff;
-            padding: 5px 10px;
-            border-radius: 5px;
-            font-size: 0.8rem;
+            color: #5a189a;
+            padding: 5px 15px;
+            border-radius: 30px;
+            font-size: 0.85rem;
             text-decoration: none;
+            transition: all 0.2s;
         }}
-        .lang-btn.active {{ background: #9d4edd; color: white; }}
+        .lang-btn.active {{ 
+            background: #9d4edd; 
+            color: white; 
+        }}
         input {{
             width: 100%;
-            padding: 12px;
+            padding: 14px 16px;
             margin: 8px 0;
-            background: {'rgba(0,0,0,0.3)' if theme == 'dark' else 'rgba(255,255,255,0.8)'};
-            border: 1px solid #7b2cbf;
-            border-radius: 10px;
-            color: {'white' if theme == 'dark' else '#1a1a2e'};
+            background: #fafafa;
+            border: 1.5px solid #eae0f5;
+            border-radius: 16px;
+            color: #1a1a2e;
             font-size: 1rem;
+            transition: border 0.2s;
+        }}
+        input:focus {{
+            outline: none;
+            border-color: #9d4edd;
+            background: #ffffff;
         }}
         button {{
             width: 100%;
-            padding: 12px;
+            padding: 14px;
             margin: 20px 0 10px;
             background: #9d4edd;
             border: none;
-            border-radius: 10px;
+            border-radius: 30px;
             color: white;
             font-size: 1.1rem;
-            font-weight: bold;
+            font-weight: 600;
             cursor: pointer;
+            transition: all 0.25s;
+            box-shadow: 0 6px 14px rgba(157, 78, 221, 0.25);
         }}
-        .create-link {{ text-align: center; margin-top: 15px; }}
-        .create-link a {{ color: #9d4edd; text-decoration: none; }}
+        button:hover {{
+            background: #7b2cbf;
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(157, 78, 221, 0.35);
+        }}
+        .create-link {{ 
+            text-align: center; 
+            margin-top: 18px; 
+        }}
+        .create-link a {{ 
+            color: #9d4edd; 
+            text-decoration: none; 
+            font-weight: 500;
+        }}
         .error {{
-            background: rgba(255,50,50,0.2);
-            color: #ff9999;
-            padding: 10px;
-            border-radius: 10px;
-            margin-bottom: 15px;
+            background: #fff5f5;
+            color: #d32f2f;
+            padding: 12px 15px;
+            border-radius: 16px;
+            margin-bottom: 18px;
             text-align: center;
+            border: 1px solid #ffcdd2;
         }}
-        .theme-toggle {{ text-align: center; margin-top: 10px; }}
-        .channel-buttons {{ display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }}
+        .channel-buttons {{ 
+            display: flex; 
+            flex-direction: column; 
+            gap: 10px; 
+            margin-top: 20px; 
+        }}
         .channel-btn {{
-            background: {'rgba(157, 78, 221, 0.2)' if theme == 'dark' else 'rgba(157, 78, 221, 0.1)'};
-            border: 1px solid #9d4edd;
-            color: {'#c77dff' if theme == 'dark' else '#5a189a'};
-            padding: 12px;
-            border-radius: 10px;
+            background: #f9f6ff;
+            border: 1px solid #d9c2f0;
+            color: #5a189a;
+            padding: 14px 12px;
+            border-radius: 40px;
             text-decoration: none;
             text-align: center;
             display: flex;
             align-items: center;
             justify-content: center;
             gap: 10px;
+            font-weight: 500;
+            transition: all 0.2s;
         }}
-        .channel-btn:hover {{ background: #9d4edd; color: white; }}
-        .channels-title {{ text-align: center; color: #c77dff; margin-top: 15px; font-size: 0.9rem; }}
+        .channel-btn:hover {{ 
+            background: #9d4edd; 
+            color: white; 
+            border-color: #9d4edd;
+        }}
+        .channels-title {{ 
+            text-align: center; 
+            color: #6b4f8c; 
+            margin-top: 18px; 
+            font-size: 0.9rem; 
+            font-weight: 500;
+        }}
+        .theme-toggle {{
+            text-align: center;
+            margin-top: 15px;
+        }}
+        .theme-toggle a {{
+            color: #9d4edd;
+            text-decoration: none;
+            font-weight: 500;
+        }}
     </style>
 </head>
 <body>
     <div class="login-container">
+        <div class="logo-circle">
+            <img src="https://i.ibb.co/9kRgLMNM/logo.png" alt="Logo">
+        </div>
         <h1>{t['app_name']}</h1>
         <div class="lang-selector">
             <a href="/set-language/ar" class="lang-btn {'active' if lang == 'ar' else ''}">العربية</a>
@@ -1325,9 +1270,7 @@ def get_login_page(error=None, lang='ar'):
         </div>
         
         <div class="theme-toggle">
-            <a href="/toggle-theme" style="color: #9d4edd; text-decoration: none;">
-                {'🌙' if theme == 'dark' else '☀️'} {t['dark_mode'] if theme == 'light' else t['light_mode']}
-            </a>
+            <a href="/toggle-theme">🌙 الوضع الليلي</a>
         </div>
     </div>
 </body>
@@ -1337,7 +1280,6 @@ def get_login_page(error=None, lang='ar'):
 def get_register_page(error=None, lang='ar'):
     t = LANGUAGES[lang]
     error_html = f'<div class="error">{error}</div>' if error else ''
-    theme = session.get('theme', 'dark')
     
     return f'''
 <!DOCTYPE html>
@@ -1350,78 +1292,163 @@ def get_register_page(error=None, lang='ar'):
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
-            background: {'linear-gradient(135deg, #0a0a1a 0%, #0d0d2b 50%, #050510 100%)' if theme == 'dark' else 'linear-gradient(135deg, #f0f0f5 0%, #e8e8ff 50%, #d5d5ff 100%)'};
+            background: #ffffff;
             font-family: 'Segoe UI', 'Cairo', sans-serif;
-            color: {'#e0e0ff' if theme == 'dark' else '#1a1a2e'};
+            color: #1a1a2e;
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
         }}
         .register-container {{
-            background: {'rgba(15, 8, 30, 0.8)' if theme == 'dark' else 'rgba(255, 255, 255, 0.8)'};
-            backdrop-filter: blur(10px);
+            background: #ffffff;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.08);
             padding: 30px;
-            border-radius: 20px;
-            border: 1px solid #9d4edd;
+            border-radius: 28px;
+            border: 1px solid rgba(157, 78, 221, 0.15);
             width: 90%;
-            max-width: 400px;
+            max-width: 420px;
         }}
-        h1 {{ text-align: center; color: #c77dff; margin-bottom: 10px; }}
-        .subtitle {{ text-align: center; color: #e0aaff; margin-bottom: 25px; }}
-        .lang-selector {{ display: flex; justify-content: center; gap: 10px; margin-bottom: 20px; }}
+        .logo-circle {{
+            width: 90px;
+            height: 90px;
+            margin: 0 auto 20px;
+            border-radius: 50%;
+            background: #f8f5ff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 2px solid #9d4edd;
+            padding: 8px;
+        }}
+        .logo-circle img {{
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            object-fit: cover;
+        }}
+        h1 {{ 
+            text-align: center; 
+            color: #5a189a; 
+            margin-bottom: 5px; 
+            font-weight: 600;
+        }}
+        .subtitle {{ 
+            text-align: center; 
+            color: #8b6baf; 
+            margin-bottom: 25px; 
+            font-size: 0.95rem;
+        }}
+        .lang-selector {{ 
+            display: flex; 
+            justify-content: center; 
+            gap: 10px; 
+            margin-bottom: 20px; 
+        }}
         .lang-btn {{
             background: none;
             border: 1px solid #9d4edd;
-            color: #c77dff;
-            padding: 5px 10px;
-            border-radius: 5px;
+            color: #5a189a;
+            padding: 5px 15px;
+            border-radius: 30px;
+            font-size: 0.85rem;
             text-decoration: none;
+            transition: all 0.2s;
         }}
-        .lang-btn.active {{ background: #9d4edd; color: white; }}
+        .lang-btn.active {{ 
+            background: #9d4edd; 
+            color: white; 
+        }}
         .input-group {{ margin-bottom: 15px; }}
-        label {{ display: block; color: #c77dff; margin-bottom: 5px; }}
+        label {{ 
+            display: block; 
+            color: #4a1d6e; 
+            margin-bottom: 6px; 
+            font-weight: 500;
+            font-size: 0.9rem;
+        }}
+        label i {{
+            color: #9d4edd;
+            width: 20px;
+        }}
         input {{
             width: 100%;
-            padding: 12px;
-            background: {'rgba(0,0,0,0.3)' if theme == 'dark' else 'rgba(255,255,255,0.8)'};
-            border: 1px solid #7b2cbf;
-            border-radius: 10px;
-            color: {'white' if theme == 'dark' else '#1a1a2e'};
+            padding: 14px 16px;
+            background: #fafafa;
+            border: 1.5px solid #eae0f5;
+            border-radius: 16px;
+            color: #1a1a2e;
             font-size: 1rem;
+            transition: border 0.2s;
+        }}
+        input:focus {{
+            outline: none;
+            border-color: #9d4edd;
+            background: #ffffff;
+        }}
+        input::placeholder {{
+            color: #b8a6cc;
         }}
         button {{
             width: 100%;
-            padding: 12px;
+            padding: 14px;
             margin: 20px 0 10px;
             background: #9d4edd;
             border: none;
-            border-radius: 10px;
+            border-radius: 30px;
             color: white;
             font-size: 1.1rem;
-            font-weight: bold;
+            font-weight: 600;
             cursor: pointer;
+            transition: all 0.25s;
+            box-shadow: 0 6px 14px rgba(157, 78, 221, 0.25);
         }}
-        .login-link {{ text-align: center; margin-top: 15px; }}
-        .login-link a {{ color: #9d4edd; text-decoration: none; }}
+        button:hover {{
+            background: #7b2cbf;
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(157, 78, 221, 0.35);
+        }}
+        .login-link {{ 
+            text-align: center; 
+            margin-top: 18px; 
+        }}
+        .login-link a {{ 
+            color: #9d4edd; 
+            text-decoration: none; 
+            font-weight: 500;
+        }}
         .error {{
-            background: rgba(255,50,50,0.2);
-            color: #ff9999;
-            padding: 10px;
-            border-radius: 10px;
-            margin-bottom: 15px;
+            background: #fff5f5;
+            color: #d32f2f;
+            padding: 12px 15px;
+            border-radius: 16px;
+            margin-bottom: 18px;
             text-align: center;
+            border: 1px solid #ffcdd2;
+        }}
+        .theme-toggle {{
+            text-align: center;
+            margin-top: 15px;
+        }}
+        .theme-toggle a {{
+            color: #9d4edd;
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
         }}
     </style>
 </head>
 <body>
     <div class="register-container">
+        <div class="logo-circle">
+            <img src="https://i.ibb.co/9kRgLMNM/logo.png" alt="Logo">
+        </div>
         <h1>{t['app_name']}</h1>
+        <div class="subtitle">✨🪐 Create Account</div>
         <div class="lang-selector">
             <a href="/set-language/ar" class="lang-btn {'active' if lang == 'ar' else ''}">العربية</a>
             <a href="/set-language/en" class="lang-btn {'active' if lang == 'en' else ''}">English</a>
         </div>
-        <div class="subtitle">✨🪐 Create Account</div>
         {error_html}
         <form method="POST">
             <div class="input-group">
@@ -1440,6 +1467,9 @@ def get_register_page(error=None, lang='ar'):
         </form>
         <div class="login-link">
             <a href="/login">{t['login']}؟</a>
+        </div>
+        <div class="theme-toggle">
+            <a href="/toggle-theme">🌙 الوضع الليلي</a>
         </div>
     </div>
 </body>
@@ -1648,30 +1678,53 @@ def user_add_number_page():
     user_id = session['user_id']
     lang = session.get('lang', 'ar')
     t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
+    theme = 'light'
     
     cursor = db_conn.cursor()
     cursor.execute('''
-        SELECT nf.id, nf.display_name 
+        SELECT nf.id, nf.display_name,
+               (SELECT COUNT(*) FROM user_numbers WHERE user_id = ? AND file_id = nf.id) as added_count
         FROM number_files nf
         WHERE nf.id NOT IN (
             SELECT file_id FROM deleted_user_files WHERE user_id = ?
         )
         ORDER BY nf.id DESC
-    ''', (user_id,))
+    ''', (user_id, user_id))
     files = cursor.fetchall()
     
     files_html = ''
     for f in files:
+        file_id, display_name, added_count = f
+        added_count = added_count or 0
+        remaining = 150 - added_count
+        
+        if remaining <= 0:
+            status = f'<span style="color: #2cc185;"><i class="fas fa-check-circle"></i> تمت إضافة 150 رقم (مكتمل)</span>'
+            btn_disabled = 'disabled style="opacity: 0.5; pointer-events: none;"'
+        else:
+            status = f'<span style="color: #fdb44b;"><i class="fas fa-plus-circle"></i> تمت إضافة {added_count} رقم - متبقي {remaining}</span>'
+            btn_disabled = ''
+        
         files_html += f'''
             <div class="card">
-                <h3>{f[1]}</h3>
-                <a href="/user/add-numbers/{f[0]}" class="btn btn-success">➕ {t['add_150_numbers']}</a>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <h3 style="margin: 0 0 8px 0;">📁 {display_name}</h3>
+                        <p style="margin: 0; opacity: 0.8;">{status}</p>
+                    </div>
+                    <a href="/user/add-numbers/{file_id}" class="btn btn-success" {btn_disabled}>
+                        ➕ إضافة 150 رقم
+                    </a>
+                </div>
             </div>
         '''
     
     if not files_html:
         files_html = f'<div class="card"><p>{t["no_files_available"]}</p></div>'
+    
+    # إحصائيات عامة
+    total_numbers = get_user_numbers_count(user_id)
+    total_files_with_numbers = len(set([f[0] for f in files if f[2] > 0]))
     
     return f'''
 <!DOCTYPE html>
@@ -1682,20 +1735,67 @@ def user_add_number_page():
     <title>{t['add_number']} - {t['app_name']}</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     {get_base_style(theme)}
+    <style>
+        .header {{
+            background: #ffffff;
+            border-bottom: 1px solid #e8e0f0;
+        }}
+        
+        .info-banner {{
+            background: linear-gradient(135deg, #9d4edd, #7b2cbf);
+            color: white;
+            padding: 20px;
+            border-radius: 20px;
+            margin-bottom: 25px;
+        }}
+        
+        .info-banner h3 {{
+            color: white;
+            margin-bottom: 10px;
+        }}
+        
+        .stats-mini {{
+            display: flex;
+            gap: 30px;
+            margin-top: 15px;
+        }}
+        
+        .stats-mini div {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+    </style>
 </head>
 <body>
     <div class="header">
         <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>➕ {t['add_number']}</h1>
+        <h1 style="color: #5a189a;">➕ {t['add_number']}</h1>
         <div></div>
     </div>
     
-    <div class="container">
+    <div class="container" style="max-width: 900px;">
+        <div class="info-banner">
+            <h3><i class="fas fa-info-circle"></i> طريقة إضافة الأرقام</h3>
+            <p>يمكنك إضافة حتى 150 رقم من كل ملف. لا يوجد حد أقصى لعدد الملفات التي يمكنك الإضافة منها.</p>
+            <div class="stats-mini">
+                <div><i class="fas fa-database"></i> إجمالي أرقامك: <strong>{total_numbers}</strong></div>
+                <div><i class="fas fa-folder-open"></i> الملفات المستخدمة: <strong>{total_files_with_numbers}</strong></div>
+            </div>
+        </div>
+        
         <div class="card">
             <h2>{t['choose_file_to_add']}</h2>
-            <p>{t['can_add_150_per_file']}</p>
+            <p style="opacity: 0.7;">الحد الأقصى: 150 رقم لكل ملف</p>
         </div>
+        
         {files_html}
+        
+        <div style="margin-top: 20px; text-align: center;">
+            <a href="/user/my-number" class="btn">
+                <i class="fas fa-list"></i> عرض جميع أرقامي
+            </a>
+        </div>
     </div>
 </body>
 </html>
@@ -1748,37 +1848,58 @@ def user_my_number_page():
     user_id = session['user_id']
     lang = session.get('lang', 'ar')
     t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
+    theme = 'light'
     
     if is_client(user_id):
         cursor = db_conn.cursor()
         cursor.execute('''
-            SELECT cn.number, nf.display_name, cn.added_at
+            SELECT cn.number, nf.display_name, cn.added_at, cn.file_id
             FROM client_numbers cn
             LEFT JOIN number_files nf ON cn.file_id = nf.id
             WHERE cn.client_id = ?
             ORDER BY cn.added_at DESC
-            LIMIT 100
         ''', (user_id,))
         numbers = cursor.fetchall()
     else:
         cursor = db_conn.cursor()
         cursor.execute('''
-            SELECT un.number, nf.display_name, un.added_at
+            SELECT un.number, nf.display_name, un.added_at, un.file_id
             FROM user_numbers un
             LEFT JOIN number_files nf ON un.file_id = nf.id
             WHERE un.user_id = ?
             ORDER BY un.added_at DESC
-            LIMIT 100
         ''', (user_id,))
         numbers = cursor.fetchall()
     
+    # إحصائيات
     numbers_count = len(numbers)
-    user_limit = get_user_limit(user_id)
+    
+    # تجميع حسب الملفات
+    file_stats = {}
+    for n in numbers:
+        file_name = n[1] or t['unknown']
+        if file_name not in file_stats:
+            file_stats[file_name] = {'count': 0, 'file_id': n[3]}
+        file_stats[file_name]['count'] += 1
     
     rows = ''
-    for n in numbers:
+    for n in numbers[:200]:
         rows += f'<tr><td>{n[0]}</td><td>{n[1] or t["unknown"]}</td><td>{n[2][:16] if n[2] else ""}</td></tr>'
+    
+    # عرض الملفات مع عدد الأرقام
+    files_summary = ''
+    for file_name, stats in file_stats.items():
+        files_summary += f'''
+            <div class="stat-card" style="text-align: center;">
+                <i class="fas fa-folder" style="font-size: 1.5rem; color: #9d4edd; margin-bottom: 8px;"></i>
+                <h4 style="margin: 5px 0;">{file_name}</h4>
+                <div class="number" style="font-size: 1.5rem;">{stats['count']}</div>
+                <small>رقم</small>
+                <div style="margin-top: 5px;">
+                    <span class="badge badge-success">{min(stats['count'], 150)}/150</span>
+                </div>
+            </div>
+        '''
     
     return f'''
 <!DOCTYPE html>
@@ -1789,19 +1910,73 @@ def user_my_number_page():
     <title>{t['my_number']} - {t['app_name']}</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     {get_base_style(theme)}
+    <style>
+        .header {{
+            background: #ffffff;
+            border-bottom: 1px solid #e8e0f0;
+        }}
+        
+        .main-stats {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 25px;
+        }}
+        
+        .main-stat-card {{
+            background: linear-gradient(135deg, #9d4edd, #7b2cbf);
+            color: white;
+            padding: 20px;
+            border-radius: 20px;
+            text-align: center;
+        }}
+        
+        .main-stat-card h3 {{
+            color: white;
+            margin-bottom: 10px;
+            font-size: 1rem;
+        }}
+        
+        .main-stat-card .number {{
+            font-size: 2.5rem;
+            font-weight: bold;
+        }}
+        
+        .files-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }}
+    </style>
 </head>
 <body>
     <div class="header">
         <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>📱 {t['my_number']}</h1>
+        <h1 style="color: #5a189a;">📱 {t['my_number']}</h1>
         <div></div>
     </div>
     
-    <div class="container">
-        <div class="grid">
-            <div class="stat-card"><h3>{t['numbers']}</h3><div class="number">{numbers_count}</div></div>
-            <div class="stat-card"><h3>{t['limit']}</h3><div class="number">{user_limit}</div></div>
-            <div class="stat-card"><h3>{t['remaining']}</h3><div class="number">{user_limit - numbers_count}</div></div>
+    <div class="container" style="max-width: 1200px;">
+        <div class="main-stats">
+            <div class="main-stat-card">
+                <h3><i class="fas fa-database"></i> إجمالي الأرقام</h3>
+                <div class="number">{numbers_count}</div>
+            </div>
+            <div class="main-stat-card" style="background: linear-gradient(135deg, #2cc185, #1a9e6a);">
+                <h3><i class="fas fa-folder-open"></i> عدد الملفات</h3>
+                <div class="number">{len(file_stats)}</div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2 style="display: flex; align-items: center; gap: 10px;">
+                <i class="fas fa-chart-pie"></i>
+                توزيع الأرقام حسب الملفات
+            </h2>
+            <div class="files-grid">
+                {files_summary if files_summary else f'<p>{t["no_files"]}</p>'}
+            </div>
         </div>
         
         <div class="card">
@@ -1810,6 +1985,16 @@ def user_my_number_page():
                 <thead><tr><th>{t['phone']}</th><th>{t['file']}</th><th>{t['date']}</th></tr></thead>
                 <tbody>{rows if rows else f'<tr><td colspan="3" style="text-align:center;">{t["no_numbers"]}</td></tr>'}</tbody>
             </table>
+            {f'<p style="text-align: center; margin-top: 15px; opacity: 0.7;">عرض أول 200 رقم من إجمالي {numbers_count}</p>' if numbers_count > 200 else ''}
+        </div>
+        
+        <div style="display: flex; gap: 10px; justify-content: center; margin-top: 20px;">
+            <a href="/user/add-number" class="btn btn-success">
+                <i class="fas fa-plus"></i> {t['add_number']}
+            </a>
+            <a href="/user/delete-number" class="btn btn-danger">
+                <i class="fas fa-trash"></i> {t['delete_number']}
+            </a>
         </div>
     </div>
 </body>
@@ -1973,13 +2158,12 @@ def user_my_sms_page():
 </body>
 </html>
 '''
-
 @app.route('/user/public-sms')
 @login_required
 def user_public_sms_page():
     lang = session.get('lang', 'ar')
     t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
+    theme = 'light'  # تثبيت الثيم الأبيض
     
     cursor = db_conn.cursor()
     cursor.execute('''
@@ -1994,12 +2178,249 @@ def user_public_sms_page():
     last_sync = cursor.fetchone()
     last_sync_time = last_sync[0] if last_sync else t['no_messages']
     
+    # ============================================================
+    #         قاموس شامل لجميع دول العالم (العلم + الكود + الاسم)
+    # ============================================================
+    COUNTRIES_DB = {
+        # الدول العربية
+        'dz': {'flag': '🇩🇿', 'code': '+213', 'name': 'Algeria', 'name_ar': 'الجزائر'},
+        'eg': {'flag': '🇪🇬', 'code': '+20', 'name': 'Egypt', 'name_ar': 'مصر'},
+        'sa': {'flag': '🇸🇦', 'code': '+966', 'name': 'Saudi Arabia', 'name_ar': 'السعودية'},
+        'ae': {'flag': '🇦🇪', 'code': '+971', 'name': 'UAE', 'name_ar': 'الإمارات'},
+        'kw': {'flag': '🇰🇼', 'code': '+965', 'name': 'Kuwait', 'name_ar': 'الكويت'},
+        'qa': {'flag': '🇶🇦', 'code': '+974', 'name': 'Qatar', 'name_ar': 'قطر'},
+        'bh': {'flag': '🇧🇭', 'code': '+973', 'name': 'Bahrain', 'name_ar': 'البحرين'},
+        'om': {'flag': '🇴🇲', 'code': '+968', 'name': 'Oman', 'name_ar': 'عمان'},
+        'jo': {'flag': '🇯🇴', 'code': '+962', 'name': 'Jordan', 'name_ar': 'الأردن'},
+        'lb': {'flag': '🇱🇧', 'code': '+961', 'name': 'Lebanon', 'name_ar': 'لبنان'},
+        'iq': {'flag': '🇮🇶', 'code': '+964', 'name': 'Iraq', 'name_ar': 'العراق'},
+        'sy': {'flag': '🇸🇾', 'code': '+963', 'name': 'Syria', 'name_ar': 'سوريا'},
+        'ps': {'flag': '🇵🇸', 'code': '+970', 'name': 'Palestine', 'name_ar': 'فلسطين'},
+        'ma': {'flag': '🇲🇦', 'code': '+212', 'name': 'Morocco', 'name_ar': 'المغرب'},
+        'tn': {'flag': '🇹🇳', 'code': '+216', 'name': 'Tunisia', 'name_ar': 'تونس'},
+        'ly': {'flag': '🇱🇾', 'code': '+218', 'name': 'Libya', 'name_ar': 'ليبيا'},
+        'sd': {'flag': '🇸🇩', 'code': '+249', 'name': 'Sudan', 'name_ar': 'السودان'},
+        'ye': {'flag': '🇾🇪', 'code': '+967', 'name': 'Yemen', 'name_ar': 'اليمن'},
+        'so': {'flag': '🇸🇴', 'code': '+252', 'name': 'Somalia', 'name_ar': 'الصومال'},
+        'dj': {'flag': '🇩🇯', 'code': '+253', 'name': 'Djibouti', 'name_ar': 'جيبوتي'},
+        'km': {'flag': '🇰🇲', 'code': '+269', 'name': 'Comoros', 'name_ar': 'جزر القمر'},
+        'mr': {'flag': '🇲🇷', 'code': '+222', 'name': 'Mauritania', 'name_ar': 'موريتانيا'},
+        
+        # دول أوروبا
+        'gb': {'flag': '🇬🇧', 'code': '+44', 'name': 'United Kingdom', 'name_ar': 'بريطانيا'},
+        'fr': {'flag': '🇫🇷', 'code': '+33', 'name': 'France', 'name_ar': 'فرنسا'},
+        'de': {'flag': '🇩🇪', 'code': '+49', 'name': 'Germany', 'name_ar': 'ألمانيا'},
+        'it': {'flag': '🇮🇹', 'code': '+39', 'name': 'Italy', 'name_ar': 'إيطاليا'},
+        'es': {'flag': '🇪🇸', 'code': '+34', 'name': 'Spain', 'name_ar': 'إسبانيا'},
+        'pt': {'flag': '🇵🇹', 'code': '+351', 'name': 'Portugal', 'name_ar': 'البرتغال'},
+        'nl': {'flag': '🇳🇱', 'code': '+31', 'name': 'Netherlands', 'name_ar': 'هولندا'},
+        'be': {'flag': '🇧🇪', 'code': '+32', 'name': 'Belgium', 'name_ar': 'بلجيكا'},
+        'ch': {'flag': '🇨🇭', 'code': '+41', 'name': 'Switzerland', 'name_ar': 'سويسرا'},
+        'at': {'flag': '🇦🇹', 'code': '+43', 'name': 'Austria', 'name_ar': 'النمسا'},
+        'se': {'flag': '🇸🇪', 'code': '+46', 'name': 'Sweden', 'name_ar': 'السويد'},
+        'no': {'flag': '🇳🇴', 'code': '+47', 'name': 'Norway', 'name_ar': 'النرويج'},
+        'dk': {'flag': '🇩🇰', 'code': '+45', 'name': 'Denmark', 'name_ar': 'الدنمارك'},
+        'fi': {'flag': '🇫🇮', 'code': '+358', 'name': 'Finland', 'name_ar': 'فنلندا'},
+        'pl': {'flag': '🇵🇱', 'code': '+48', 'name': 'Poland', 'name_ar': 'بولندا'},
+        'cz': {'flag': '🇨🇿', 'code': '+420', 'name': 'Czech Republic', 'name_ar': 'التشيك'},
+        'hu': {'flag': '🇭🇺', 'code': '+36', 'name': 'Hungary', 'name_ar': 'المجر'},
+        'ro': {'flag': '🇷🇴', 'code': '+40', 'name': 'Romania', 'name_ar': 'رومانيا'},
+        'bg': {'flag': '🇧🇬', 'code': '+359', 'name': 'Bulgaria', 'name_ar': 'بلغاريا'},
+        'gr': {'flag': '🇬🇷', 'code': '+30', 'name': 'Greece', 'name_ar': 'اليونان'},
+        'ie': {'flag': '🇮🇪', 'code': '+353', 'name': 'Ireland', 'name_ar': 'أيرلندا'},
+        'ru': {'flag': '🇷🇺', 'code': '+7', 'name': 'Russia', 'name_ar': 'روسيا'},
+        'ua': {'flag': '🇺🇦', 'code': '+380', 'name': 'Ukraine', 'name_ar': 'أوكرانيا'},
+        'tr': {'flag': '🇹🇷', 'code': '+90', 'name': 'Turkey', 'name_ar': 'تركيا'},
+        
+        # أمريكا الشمالية
+        'us': {'flag': '🇺🇸', 'code': '+1', 'name': 'United States', 'name_ar': 'أمريكا'},
+        'ca': {'flag': '🇨🇦', 'code': '+1', 'name': 'Canada', 'name_ar': 'كندا'},
+        'mx': {'flag': '🇲🇽', 'code': '+52', 'name': 'Mexico', 'name_ar': 'المكسيك'},
+        
+        # أمريكا الجنوبية
+        'br': {'flag': '🇧🇷', 'code': '+55', 'name': 'Brazil', 'name_ar': 'البرازيل'},
+        'ar': {'flag': '🇦🇷', 'code': '+54', 'name': 'Argentina', 'name_ar': 'الأرجنتين'},
+        'cl': {'flag': '🇨🇱', 'code': '+56', 'name': 'Chile', 'name_ar': 'تشيلي'},
+        'co': {'flag': '🇨🇴', 'code': '+57', 'name': 'Colombia', 'name_ar': 'كولومبيا'},
+        'pe': {'flag': '🇵🇪', 'code': '+51', 'name': 'Peru', 'name_ar': 'بيرو'},
+        've': {'flag': '🇻🇪', 'code': '+58', 'name': 'Venezuela', 'name_ar': 'فنزويلا'},
+        'ec': {'flag': '🇪🇨', 'code': '+593', 'name': 'Ecuador', 'name_ar': 'الإكوادور'},
+        'uy': {'flag': '🇺🇾', 'code': '+598', 'name': 'Uruguay', 'name_ar': 'أوروغواي'},
+        'py': {'flag': '🇵🇾', 'code': '+595', 'name': 'Paraguay', 'name_ar': 'باراغواي'},
+        'bo': {'flag': '🇧🇴', 'code': '+591', 'name': 'Bolivia', 'name_ar': 'بوليفيا'},
+        
+        # آسيا
+        'cn': {'flag': '🇨🇳', 'code': '+86', 'name': 'China', 'name_ar': 'الصين'},
+        'jp': {'flag': '🇯🇵', 'code': '+81', 'name': 'Japan', 'name_ar': 'اليابان'},
+        'kr': {'flag': '🇰🇷', 'code': '+82', 'name': 'South Korea', 'name_ar': 'كوريا'},
+        'in': {'flag': '🇮🇳', 'code': '+91', 'name': 'India', 'name_ar': 'الهند'},
+        'pk': {'flag': '🇵🇰', 'code': '+92', 'name': 'Pakistan', 'name_ar': 'باكستان'},
+        'bd': {'flag': '🇧🇩', 'code': '+880', 'name': 'Bangladesh', 'name_ar': 'بنغلاديش'},
+        'id': {'flag': '🇮🇩', 'code': '+62', 'name': 'Indonesia', 'name_ar': 'إندونيسيا'},
+        'my': {'flag': '🇲🇾', 'code': '+60', 'name': 'Malaysia', 'name_ar': 'ماليزيا'},
+        'sg': {'flag': '🇸🇬', 'code': '+65', 'name': 'Singapore', 'name_ar': 'سنغافورة'},
+        'th': {'flag': '🇹🇭', 'code': '+66', 'name': 'Thailand', 'name_ar': 'تايلاند'},
+        'vn': {'flag': '🇻🇳', 'code': '+84', 'name': 'Vietnam', 'name_ar': 'فيتنام'},
+        'ph': {'flag': '🇵🇭', 'code': '+63', 'name': 'Philippines', 'name_ar': 'الفلبين'},
+        'ir': {'flag': '🇮🇷', 'code': '+98', 'name': 'Iran', 'name_ar': 'إيران'},
+        'il': {'flag': '🇮🇱', 'code': '+972', 'name': 'Israel', 'name_ar': 'إسرائيل'},
+        'kz': {'flag': '🇰🇿', 'code': '+7', 'name': 'Kazakhstan', 'name_ar': 'كازاخستان'},
+        'uz': {'flag': '🇺🇿', 'code': '+998', 'name': 'Uzbekistan', 'name_ar': 'أوزبكستان'},
+        'af': {'flag': '🇦🇫', 'code': '+93', 'name': 'Afghanistan', 'name_ar': 'أفغانستان'},
+        
+        # أفريقيا
+        'ng': {'flag': '🇳🇬', 'code': '+234', 'name': 'Nigeria', 'name_ar': 'نيجيريا'},
+        'za': {'flag': '🇿🇦', 'code': '+27', 'name': 'South Africa', 'name_ar': 'جنوب أفريقيا'},
+        'ke': {'flag': '🇰🇪', 'code': '+254', 'name': 'Kenya', 'name_ar': 'كينيا'},
+        'et': {'flag': '🇪🇹', 'code': '+251', 'name': 'Ethiopia', 'name_ar': 'إثيوبيا'},
+        'gh': {'flag': '🇬🇭', 'code': '+233', 'name': 'Ghana', 'name_ar': 'غانا'},
+        'ci': {'flag': '🇨🇮', 'code': '+225', 'name': 'Ivory Coast', 'name_ar': 'ساحل العاج'},
+        'cm': {'flag': '🇨🇲', 'code': '+237', 'name': 'Cameroon', 'name_ar': 'الكاميرون'},
+        'sn': {'flag': '🇸🇳', 'code': '+221', 'name': 'Senegal', 'name_ar': 'السنغال'},
+        'ug': {'flag': '🇺🇬', 'code': '+256', 'name': 'Uganda', 'name_ar': 'أوغندا'},
+        'tz': {'flag': '🇹🇿', 'code': '+255', 'name': 'Tanzania', 'name_ar': 'تنزانيا'},
+        'ao': {'flag': '🇦🇴', 'code': '+244', 'name': 'Angola', 'name_ar': 'أنغولا'},
+        
+        # أوقيانوسيا
+        'au': {'flag': '🇦🇺', 'code': '+61', 'name': 'Australia', 'name_ar': 'أستراليا'},
+        'nz': {'flag': '🇳🇿', 'code': '+64', 'name': 'New Zealand', 'name_ar': 'نيوزيلندا'},
+    }
+    
+    def extract_country_info(text):
+        """استخراج الدولة والكود والعلم"""
+        text_lower = text.lower()
+        import re
+        
+        # 1. البحث عن رمز الدولة (#XX)
+        hashtag_match = re.search(r'#([A-Za-z]{2,3})\b', text)
+        if hashtag_match:
+            code = hashtag_match.group(1).lower()
+            if code in COUNTRIES_DB:
+                return COUNTRIES_DB[code]['flag'], COUNTRIES_DB[code]['code'], COUNTRIES_DB[code]['name']
+        
+        # 2. البحث عن اسم الدولة كامل
+        for key, data in COUNTRIES_DB.items():
+            if data['name'].lower() in text_lower or data['name_ar'] in text:
+                return data['flag'], data['code'], data['name']
+        
+        # 3. البحث عن مفتاح الدولة (+XXX)
+        code_match = re.search(r'\+(\d{1,3})\b', text)
+        if code_match:
+            dial_code = '+' + code_match.group(1)
+            for key, data in COUNTRIES_DB.items():
+                if data['code'] == dial_code:
+                    return data['flag'], data['code'], data['name']
+        
+        # 4. البحث عن أعلام موجودة
+        for key, data in COUNTRIES_DB.items():
+            if data['flag'] in text:
+                return data['flag'], data['code'], data['name']
+        
+        return '🌍', '', 'Unknown'
+    
+    def extract_phone_number(text):
+        """استخراج رقم الهاتف"""
+        import re
+        patterns = [
+            r'([A-Za-z]?\d{8,15})',
+            r'(\+\d{1,3}[\s.-]?\d{8,15})',
+            r'(\d{2,3}[•*]{2,}\d{3,5})',
+            r'\b(\d{8,15})\b',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                number = match.group(1)
+                if '•' in number or '*' in number:
+                    return number
+                if len(number) > 8:
+                    return number[:4] + '••••' + number[-4:]
+                return number
+        return '—'
+    
+    def extract_cli_info(text):
+        """استخراج CLI"""
+        text_lower = text.lower()
+        cli_map = {
+            'whatsapp': '📱 WhatsApp', 'واتساب': '📱 WhatsApp', 'واتس': '📱 WhatsApp',
+            'telegram': '✈️ Telegram', 'تيليجرام': '✈️ Telegram',
+            'viber': '📞 Viber', 'فايبر': '📞 Viber',
+            'signal': '🔒 Signal',
+            'tinder': '🔥 Tinder',
+            'tiktok': '🎵 TikTok',
+            'google': '𝐆 Google',
+            'facebook': '𝐟 Facebook',
+            'instagram': '📷 Instagram',
+            'snapchat': '👻 Snapchat',
+            'twitter': '🐦 X', 'x.com': '🐦 X',
+            'binance': '₿ Binance', 'binance': '₿ Binance',
+            'paypal': '💰 PayPal',
+            'amazon': '📦 Amazon',
+            'netflix': '🎬 Netflix',
+            'uber': '🚗 Uber',
+            'code': '🔐 OTP', 'otp': '🔐 OTP', 'verify': '🔐 OTP', 'رمز': '🔐 OTP', 'كود': '🔐 OTP',
+        }
+        for key, value in cli_map.items():
+            if key in text_lower:
+                return value
+        return '📨 SMS'
+    
+    def extract_clean_message(text, flag, country_code, number):
+        """استخراج الرسالة النظيفة"""
+        import re
+        clean = text
+        if flag != '🌍':
+            clean = clean.replace(flag, '')
+        clean = re.sub(r'#[A-Z]{2,3}\s*', '', clean)
+        if number != '—':
+            clean = clean.replace(number.replace('•', '•'), '')
+        clean = re.sub(r'\+\d{1,3}\s*', '', clean)
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        
+        # استخراج الكود
+        code = extract_otp_from_message(text)
+        if code:
+            return f'{clean[:50]}... <span style="background: #9d4edd; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; margin-right: 5px;">🔐 {code}</span>' if len(clean) > 50 else f'{clean} <span style="background: #9d4edd; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; margin-right: 5px;">🔐 {code}</span>'
+        
+        return clean[:80] + '...' if len(clean) > 80 else clean
+    
+    # تجهيز الصفوف
     rows = ''
+    total_payout = 0
     for m in messages:
-        code = extract_otp_from_message(m[0])
-        code_display = f'<span class="badge badge-success">{code}</span>' if code else ''
-        text_preview = m[0][:100] + '...' if len(m[0]) > 100 else m[0]
-        rows += f'<tr><td>{text_preview} {code_display}</td><td>{m[1][:16] if m[1] else ""}</td></tr>'
+        text = m[0]
+        msg_date = m[1][:19] if m[1] else ''
+        
+        flag, dial_code, country_name = extract_country_info(text)
+        number = extract_phone_number(text)
+        cli = extract_cli_info(text)
+        message = extract_clean_message(text, flag, dial_code, number)
+        payout = 0.01
+        total_payout += payout
+        
+        # اختيار الاسم حسب اللغة
+        display_name = country_name
+        if lang == 'ar':
+            for key, data in COUNTRIES_DB.items():
+                if data['name'] == country_name:
+                    display_name = data['name_ar']
+                    break
+        
+        rows += f'''
+            <tr>
+                <td style="white-space: nowrap;">{msg_date}</td>
+                <td style="white-space: nowrap;">
+                    <span style="display: flex; align-items: center; gap: 8px;">
+                        <span style="font-size: 1.4rem;">{flag}</span>
+                        <span style="font-weight: 500;">{display_name}</span>
+                    </span>
+                </td>
+                <td style="direction: ltr; font-family: 'Courier New', monospace;">{number}</td>
+                <td><span class="cli-badge">{cli}</span></td>
+                <td style="max-width: 400px;">{message}</td>
+                <td style="color: #2cc185; font-weight: 600;">$ {payout:.2f}</td>
+            </tr>
+        '''
     
     return f'''
 <!DOCTYPE html>
@@ -2007,64 +2428,295 @@ def user_public_sms_page():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['public_sms']} - {t['app_name']}</title>
+    <title>Show Records - {t['app_name']}</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
+    {get_base_style('light')}
+    <style>
+        * {{ box-sizing: border-box; }}
+        body {{ 
+            background: #f8f9fc; 
+        }}
+        
+        .records-container {{
+            max-width: 100% !important;
+            width: 100% !important;
+            padding: 15px 20px !important;
+            margin: 0 !important;
+        }}
+        
+        .page-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 15px;
+        }}
+        
+        .page-header h1 {{
+            margin: 0;
+            font-size: 1.8rem;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            color: #4a1d6e;
+        }}
+        
+        .total-badge {{
+            background: #f0e8fa;
+            padding: 6px 15px;
+            border-radius: 30px;
+            font-size: 0.9rem;
+            color: #5a189a;
+            border: 1px solid #d9c2f0;
+        }}
+        
+        .table-wrapper {{
+            overflow-x: auto;
+            border-radius: 16px;
+            background: #ffffff;
+            border: 1px solid #e8e0f0;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.04);
+            margin-bottom: 20px;
+        }}
+        
+        .records-table {{
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 1100px;
+            font-size: 0.9rem;
+        }}
+        
+        .records-table th {{
+            background: #f8f5ff;
+            padding: 14px 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.8rem;
+            letter-spacing: 0.5px;
+            border-bottom: 2px solid #d9c2f0;
+            white-space: nowrap;
+            color: #5a189a;
+        }}
+        
+        .records-table td {{
+            padding: 12px;
+            border-bottom: 1px solid #f0e8fa;
+            vertical-align: middle;
+            color: #1a1a2e;
+        }}
+        
+        .records-table tr:hover td {{
+            background: #fdfbff;
+        }}
+        
+        .cli-badge {{
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background: #f0e8fa;
+            color: #5a189a;
+            white-space: nowrap;
+        }}
+        
+        .table-footer {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 15px;
+            flex-wrap: wrap;
+            gap: 15px;
+        }}
+        
+        .total-info {{
+            background: #e8faf1;
+            padding: 10px 20px;
+            border-radius: 30px;
+            border: 1px solid #2cc185;
+            color: #1a1a2e;
+        }}
+        
+        .total-info strong {{
+            color: #2cc185;
+            font-size: 1.3rem;
+            margin: 0 10px;
+        }}
+        
+        .pagination {{
+            display: flex;
+            gap: 5px;
+        }}
+        
+        .pagination button {{
+            padding: 8px 15px;
+            background: #ffffff;
+            border: 1px solid #d9c2f0;
+            border-radius: 8px;
+            color: #4a1d6e;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }}
+        
+        .pagination button:hover {{
+            background: #9d4edd;
+            color: white;
+            border-color: #9d4edd;
+        }}
+        
+        .action-bar {{
+            display: flex;
+            gap: 10px;
+        }}
+        
+        .btn-success {{
+            background: #2cc185;
+            box-shadow: 0 4px 10px rgba(44, 193, 133, 0.2);
+        }}
+        
+        .btn-success:hover {{
+            background: #25a86f;
+        }}
+        
+        /* تنسيق عرض الأعمدة */
+        .records-table th:nth-child(1) {{ width: 160px; }}
+        .records-table th:nth-child(2) {{ width: 180px; }}
+        .records-table th:nth-child(3) {{ width: 140px; }}
+        .records-table th:nth-child(4) {{ width: 110px; }}
+        .records-table th:nth-child(5) {{ /* Message - auto */ }}
+        .records-table th:nth-child(6) {{ width: 100px; }}
+        
+        .header {{
+            background: #ffffff;
+            border-bottom: 1px solid #e8e0f0;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.02);
+        }}
+        
+        .back-btn {{
+            background: #f8f5ff;
+            color: #5a189a;
+            border: 1px solid #d9c2f0;
+        }}
+        
+        @media (max-width: 768px) {{
+            .records-container {{ padding: 10px !important; }}
+            .page-header {{ flex-direction: column; align-items: flex-start; }}
+        }}
+    </style>
 </head>
 <body>
     <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>🌐 {t['public_sms']}</h1>
-        <button class="btn" onclick="syncMessages()" id="syncBtn">
-            <i class="fas fa-sync-alt"></i> {t['sync_now']}
-        </button>
-        <button class="btn" onclick="location.reload()">
-            <i class="fas fa-redo-alt"></i> {t['refresh']}
-        </button>
+        <div style="display: flex; align-items: center; gap: 15px;">
+            <a href="/dashboard" class="back-btn">
+                <i class="fas fa-arrow-right"></i> {t['back']}
+            </a>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <span id="syncStatus"></span>
+            <span class="total-badge">
+                <i class="far fa-clock"></i> {last_sync_time}
+            </span>
+        </div>
     </div>
     
-    <div class="container">
-        <div class="card">
-            <h2>{t['all_public_messages']}</h2>
-            <p class="last-sync">
-                <i class="fas fa-clock"></i> {t['last_sync']}: {last_sync_time}
-                <span id="syncStatus"></span>
-            </p>
-            <table>
-                <thead><tr><th>{t['messages']}</th><th>{t['date']}</th></tr></thead>
-                <tbody id="messagesTable">
-                    {rows if rows else f'<tr><td colspan="2" style="text-align:center;">{t["no_messages"]}</td></tr>'}
+    <div class="container records-container">
+        <div class="page-header">
+            <h1>
+                <i class="fas fa-table" style="color: #9d4edd;"></i>
+                Show Records
+            </h1>
+            <div class="action-bar">
+                <button class="btn btn-success" onclick="syncMessages()" id="syncBtn">
+                    <i class="fas fa-cloud-download-alt"></i> Sync
+                </button>
+                <button class="btn" onclick="location.reload()">
+                    <i class="fas fa-redo-alt"></i> Refresh
+                </button>
+            </div>
+        </div>
+        
+        <div class="table-wrapper">
+            <table class="records-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Range</th>
+                        <th>Number</th>
+                        <th>CLI</th>
+                        <th>SMS</th>
+                        <th>My Payout</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows if rows else f'''
+                    <tr>
+                        <td colspan="6" style="text-align: center; padding: 50px;">
+                            <i class="far fa-comment-dots" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>
+                            <span style="color: #8b6baf;">No messages found</span>
+                        </td>
+                    </tr>
+                    '''}
                 </tbody>
             </table>
+        </div>
+        
+        <div class="table-footer">
+            <div class="total-info">
+                <i class="fas fa-envelope"></i> Total SMS <strong>{len(messages)}</strong>
+                <span style="margin: 0 15px; opacity: 0.5;">|</span>
+                <i class="fas fa-dollar-sign"></i> Total Payout <strong>$ {total_payout:.2f}</strong>
+            </div>
+            
+            <div class="pagination">
+                <button><i class="fas fa-angle-double-left"></i> First</button>
+                <button><i class="fas fa-angle-left"></i> Previous</button>
+                <button style="background: #9d4edd; color: white; border-color: #9d4edd;">1</button>
+                <button><i class="fas fa-angle-right"></i> Next</button>
+                <button>Last <i class="fas fa-angle-double-right"></i></button>
+            </div>
+        </div>
+        
+        <div style="text-align: center; margin-top: 15px; color: #8b6baf; font-size: 0.85rem;">
+            Showing 1 to {len(messages)} of {len(messages)} entries
         </div>
     </div>
     
     <script>
         async function syncMessages() {{
             const btn = document.getElementById('syncBtn');
+            const statusEl = document.getElementById('syncStatus');
             const originalText = btn.innerHTML;
-            const status = document.getElementById('syncStatus');
             
             btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> {t["loading"]}';
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...';
+            statusEl.innerHTML = '<span style="color: #fdb44b;"><i class="fas fa-spinner fa-spin"></i> Syncing...</span>';
             
             try {{
                 const r = await fetch('/api/sync');
                 const d = await r.json();
+                
                 if (d.success) {{
-                    status.innerHTML = '<span style="color: #00b894;"> ✅ {t["success"]}! ' + d.new_messages + ' {t["new_message"]}</span>';
+                    statusEl.innerHTML = '<span style="color: #2cc185;"><i class="fas fa-check-circle"></i> +' + d.new_messages + ' new</span>';
                     setTimeout(() => location.reload(), 1500);
                 }} else {{
-                    status.innerHTML = '<span style="color: #ff4444;"> ❌ {t["error"]}</span>';
+                    statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> Error</span>';
                     btn.disabled = false;
                     btn.innerHTML = originalText;
                 }}
             }} catch(e) {{
-                status.innerHTML = '<span style="color: #ff4444;"> ❌ {t["error"]}</span>';
+                statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> Error</span>';
                 btn.disabled = false;
                 btn.innerHTML = originalText;
             }}
         }}
+        
+        setInterval(function() {{
+            fetch('/api/sync').then(r => r.json()).then(d => {{
+                if (d.success && d.new_messages > 0) location.reload();
+            }});
+        }}, 30000);
     </script>
 </body>
 </html>
@@ -3797,56 +4449,53 @@ def user_add_numbers(file_id):
         return redirect('/dashboard')
     
     user_id = session['user_id']
-    current_count = get_user_numbers_count(user_id)
-    user_limit = get_user_limit(user_id)
     
     cursor = db_conn.cursor()
+    
+    # نحسب كام رقم المستخدم ضاف من الملف ده تحديداً
+    cursor.execute('SELECT COUNT(*) FROM user_numbers WHERE user_id = ? AND file_id = ?', (user_id, file_id))
+    file_count = cursor.fetchone()[0]
+    
+    # الحد الأقصى لكل ملف هو 150 رقم
+    FILE_LIMIT = 150
+    
+    if file_count >= FILE_LIMIT:
+        # المستخدم وصل للحد الأقصى لهذا الملف
+        return redirect('/user/add-number')
+    
+    # جلب الأرقام من الملف
     cursor.execute('SELECT numbers FROM number_files WHERE id = ?', (file_id,))
     result = cursor.fetchone()
     
     if result:
-        numbers = json.loads(result[0])
-        numbers_to_add = numbers[:150]
+        all_numbers = json.loads(result[0])
+        
+        # حساب المساحة المتبقية في هذا الملف
+        remaining_in_file = FILE_LIMIT - file_count
+        
+        # ناخد الأرقام الجديدة (اللي مش مضافة قبل كدا من نفس الملف)
+        numbers_to_add = []
+        
+        for num in all_numbers:
+            # التحقق من عدم وجود الرقم مسبقاً للمستخدم من نفس الملف
+            cursor.execute('SELECT id FROM user_numbers WHERE user_id = ? AND file_id = ? AND number = ?', 
+                          (user_id, file_id, num))
+            if not cursor.fetchone():
+                numbers_to_add.append(num)
+                if len(numbers_to_add) >= remaining_in_file:
+                    break
         
         added = 0
         for num in numbers_to_add:
-            if current_count < user_limit:
-                cursor.execute('''
-                    INSERT OR IGNORE INTO user_numbers (user_id, file_id, number, added_at)
-                    VALUES (?, ?, ?, ?)
-                ''', (user_id, file_id, num, datetime.now().isoformat()))
-                if cursor.rowcount > 0:
-                    current_count += 1
-                    added += 1
+            cursor.execute('''
+                INSERT INTO user_numbers (user_id, file_id, number, added_at)
+                VALUES (?, ?, ?, ?)
+            ''', (user_id, file_id, num, datetime.now().isoformat()))
+            if cursor.rowcount > 0:
+                added += 1
         
         db_conn.commit()
         log_activity(user_id, 'add_numbers', f'Added {added} numbers from file {file_id}')
-    
-    return redirect('/user/my-number')
-
-@app.route('/user/delete-number', methods=['POST'])
-@login_required
-def user_delete_number():
-    if is_client(session['user_id']):
-        return redirect('/dashboard')
-    
-    file_name = request.form.get('file_name')
-    user_id = session['user_id']
-    
-    cursor = db_conn.cursor()
-    cursor.execute('SELECT id FROM number_files WHERE display_name = ?', (file_name,))
-    file_result = cursor.fetchone()
-    
-    if file_result:
-        file_id = file_result[0]
-        cursor.execute('''
-            INSERT INTO deleted_user_numbers (user_id, file_id, number, deleted_at)
-            SELECT user_id, file_id, number, ? FROM user_numbers
-            WHERE user_id = ? AND file_id = ?
-        ''', (datetime.now().isoformat(), user_id, file_id))
-        cursor.execute('DELETE FROM user_numbers WHERE user_id = ? AND file_id = ?', (user_id, file_id))
-        db_conn.commit()
-        log_activity(user_id, 'delete_numbers', f'Deleted numbers from file: {file_name}')
     
     return redirect('/user/my-number')
 
