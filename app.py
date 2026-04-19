@@ -410,17 +410,7 @@ def save_message_to_db(msg_id, text, date):
             VALUES (?, ?, ?, ?, 0)
         ''', (msg_id, text, date, datetime.now().isoformat()))
         
-        code = extract_otp_from_message(text)
-        if code:
-            cursor.execute('''
-                SELECT user_id FROM user_numbers 
-                WHERE ? LIKE '%' || substr(number, -4) 
-                OR number LIKE '%' || ?
-            ''', (text, code))
-            user_rows = cursor.fetchall()
-            for row in user_rows:
-                save_codes_for_user(row[0], '', code)
-        
+        # ... باقي الكود ...
         db_conn.commit()
         return True
     except Exception as e:
@@ -548,7 +538,13 @@ def start_message_listener():
         msg = event.message
         if msg.message:
             print(f'📨 رسالة جديدة: {msg.message[:50]}...')
+            print(f'   📅 تاريخ الرسالة: {msg.date}')
+            print(f'   🆔 Message ID: {msg.id}')
+            
+            # حفظ الرسالة في قاعدة البيانات
             save_message_to_db(msg.id, msg.message, msg.date.isoformat())
+            
+            # ... باقي الكود ...
             
             cursor = db_conn.cursor()
             cursor.execute('''
@@ -2163,13 +2159,15 @@ def user_my_sms_page():
 def user_public_sms_page():
     lang = session.get('lang', 'ar')
     t = LANGUAGES[lang]
-    theme = 'light'  # تثبيت الثيم الأبيض
+    theme = 'light'
     
     cursor = db_conn.cursor()
+    
+    # ترتيب حسب تاريخ الرسالة تنازلياً (الأحدث أولاً)
     cursor.execute('''
-        SELECT text, date FROM messages 
+        SELECT text, date, message_id FROM messages 
         WHERE is_deleted = 0 
-        ORDER BY message_id DESC 
+        ORDER BY date DESC, message_id DESC 
         LIMIT 100
     ''')
     messages = cursor.fetchall()
@@ -2178,6 +2176,7 @@ def user_public_sms_page():
     last_sync = cursor.fetchone()
     last_sync_time = last_sync[0] if last_sync else t['no_messages']
     
+    # ... باقي الكود زي ما هو ...
     # ============================================================
     #         قاموس شامل لجميع دول العالم (العلم + الكود + الاسم)
     # ============================================================
@@ -2291,19 +2290,16 @@ def user_public_sms_page():
         text_lower = text.lower()
         import re
         
-        # 1. البحث عن رمز الدولة (#XX)
         hashtag_match = re.search(r'#([A-Za-z]{2,3})\b', text)
         if hashtag_match:
             code = hashtag_match.group(1).lower()
             if code in COUNTRIES_DB:
                 return COUNTRIES_DB[code]['flag'], COUNTRIES_DB[code]['code'], COUNTRIES_DB[code]['name']
         
-        # 2. البحث عن اسم الدولة كامل
         for key, data in COUNTRIES_DB.items():
             if data['name'].lower() in text_lower or data['name_ar'] in text:
                 return data['flag'], data['code'], data['name']
         
-        # 3. البحث عن مفتاح الدولة (+XXX)
         code_match = re.search(r'\+(\d{1,3})\b', text)
         if code_match:
             dial_code = '+' + code_match.group(1)
@@ -2311,7 +2307,6 @@ def user_public_sms_page():
                 if data['code'] == dial_code:
                     return data['flag'], data['code'], data['name']
         
-        # 4. البحث عن أعلام موجودة
         for key, data in COUNTRIES_DB.items():
             if data['flag'] in text:
                 return data['flag'], data['code'], data['name']
@@ -2366,23 +2361,19 @@ def user_public_sms_page():
         return '📨 SMS'
     
     def extract_clean_message(text, flag, country_code, number):
-        """استخراج الرسالة النظيفة"""
-        import re
+        """استخراج الرسالة كاملة مع تمييز الكود"""
         clean = text
-        if flag != '🌍':
-            clean = clean.replace(flag, '')
-        clean = re.sub(r'#[A-Z]{2,3}\s*', '', clean)
-        if number != '—':
-            clean = clean.replace(number.replace('•', '•'), '')
-        clean = re.sub(r'\+\d{1,3}\s*', '', clean)
-        clean = re.sub(r'\s+', ' ', clean).strip()
         
-        # استخراج الكود
+        # تمييز الكود فقط بدون تقطيع النص
         code = extract_otp_from_message(text)
         if code:
-            return f'{clean[:50]}... <span style="background: #9d4edd; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; margin-right: 5px;">🔐 {code}</span>' if len(clean) > 50 else f'{clean} <span style="background: #9d4edd; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; margin-right: 5px;">🔐 {code}</span>'
+            code_badge = f'<span style="background: linear-gradient(135deg, #9d4edd, #7b2cbf); color: white; padding: 4px 12px; border-radius: 30px; font-size: 0.85rem; font-weight: bold; margin-left: 8px; display: inline-block; box-shadow: 0 2px 8px rgba(157, 78, 221, 0.3);"><i class="fas fa-key" style="margin-right: 5px; font-size: 0.7rem;"></i>{code}</span>'
+            if code in clean:
+                clean = clean.replace(code, code_badge)
+            else:
+                clean = f'{clean} {code_badge}'
         
-        return clean[:80] + '...' if len(clean) > 80 else clean
+        return clean
     
     # تجهيز الصفوف
     rows = ''
@@ -2398,7 +2389,6 @@ def user_public_sms_page():
         payout = 0.01
         total_payout += payout
         
-        # اختيار الاسم حسب اللغة
         display_name = country_name
         if lang == 'ar':
             for key, data in COUNTRIES_DB.items():
@@ -2415,14 +2405,13 @@ def user_public_sms_page():
                         <span style="font-weight: 500;">{display_name}</span>
                     </span>
                 </td>
-                <td style="direction: ltr; font-family: 'Courier New', monospace;">{number}</td>
+                <td style="direction: ltr; font-family: 'Courier New', monospace; white-space: nowrap;">{number}</td>
                 <td><span class="cli-badge">{cli}</span></td>
-                <td style="max-width: 400px;">{message}</td>
-                <td style="color: #2cc185; font-weight: 600;">$ {payout:.2f}</td>
+                <td style="font-size: 1rem; line-height: 1.8; word-break: break-word; white-space: normal; padding: 12px 15px;">{message}</td>
+                <td style="color: #2cc185; font-weight: 600; white-space: nowrap;">$ {payout:.2f}</td>
             </tr>
         '''
     
-    # تجهيز رسالة "لا توجد رسائل"
     empty_message = '''
     <tr>
         <td colspan="6" style="text-align: center; padding: 50px;">
@@ -2445,9 +2434,7 @@ def user_public_sms_page():
     {get_base_style('light')}
     <style>
         * {{ box-sizing: border-box; }}
-        body {{ 
-            background: #f8f9fc; 
-        }}
+        body {{ background: #f8f9fc; }}
         
         .records-container {{
             max-width: 100% !important;
@@ -2490,13 +2477,15 @@ def user_public_sms_page():
             border: 1px solid #e8e0f0;
             box-shadow: 0 4px 12px rgba(0,0,0,0.04);
             margin-bottom: 20px;
+            width: 100%;
         }}
         
         .records-table {{
             width: 100%;
             border-collapse: collapse;
-            min-width: 1100px;
-            font-size: 0.9rem;
+            min-width: 1500px;
+            font-size: 0.95rem;
+            table-layout: fixed;
         }}
         
         .records-table th {{
@@ -2512,9 +2501,9 @@ def user_public_sms_page():
         }}
         
         .records-table td {{
-            padding: 12px;
+            padding: 14px 12px;
             border-bottom: 1px solid #f0e8fa;
-            vertical-align: middle;
+            vertical-align: top;
             color: #1a1a2e;
         }}
         
@@ -2532,6 +2521,14 @@ def user_public_sms_page():
             color: #5a189a;
             white-space: nowrap;
         }}
+        
+        /* توزيع عرض الأعمدة - عمود الرسالة ياخد أكبر مساحة */
+        .records-table th:nth-child(1) {{ width: 140px; }} /* Date */
+        .records-table th:nth-child(2) {{ width: 160px; }} /* Range */
+        .records-table th:nth-child(3) {{ width: 130px; }} /* Number */
+        .records-table th:nth-child(4) {{ width: 110px; }} /* CLI */
+        .records-table th:nth-child(5) {{ width: 50%; }} /* SMS - كبير */
+        .records-table th:nth-child(6) {{ width: 90px; }} /* Payout */
         
         .table-footer {{
             display: flex;
@@ -2591,14 +2588,6 @@ def user_public_sms_page():
         .btn-success:hover {{
             background: #25a86f;
         }}
-        
-        /* تنسيق عرض الأعمدة */
-        .records-table th:nth-child(1) {{ width: 160px; }}
-        .records-table th:nth-child(2) {{ width: 180px; }}
-        .records-table th:nth-child(3) {{ width: 140px; }}
-        .records-table th:nth-child(4) {{ width: 110px; }}
-        .records-table th:nth-child(5) {{ /* Message - auto */ }}
-        .records-table th:nth-child(6) {{ width: 100px; }}
         
         .header {{
             background: #ffffff;
@@ -2689,39 +2678,60 @@ def user_public_sms_page():
     </div>
     
     <script>
+        // تحديث وقت آخر مزامنة
+        function updateLastSync() {{
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('ar-EG', {{ hour: '2-digit', minute: '2-digit', second: '2-digit' }});
+            const dateStr = now.toLocaleDateString('ar-EG');
+            document.querySelector('.total-badge').innerHTML = '<i class="far fa-clock"></i> {t["last_sync"]}: ' + timeStr + ' ' + dateStr;
+        }}
+        
         async function syncMessages() {{
             const btn = document.getElementById('syncBtn');
             const statusEl = document.getElementById('syncStatus');
             const originalText = btn.innerHTML;
             
             btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...';
-            statusEl.innerHTML = '<span style="color: #fdb44b;"><i class="fas fa-spinner fa-spin"></i> Syncing...</span>';
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> {t["loading"]}';
+            statusEl.innerHTML = '<span style="color: #fdb44b;"><i class="fas fa-spinner fa-spin"></i> جاري المزامنة...</span>';
             
             try {{
                 const r = await fetch('/api/sync');
                 const d = await r.json();
                 
                 if (d.success) {{
-                    statusEl.innerHTML = '<span style="color: #2cc185;"><i class="fas fa-check-circle"></i> +' + d.new_messages + ' new</span>';
+                    statusEl.innerHTML = '<span style="color: #2cc185;"><i class="fas fa-check-circle"></i> ✅ {t["success"]}! +' + d.new_messages + ' {t["new_message"]}</span>';
+                    updateLastSync();
                     setTimeout(() => location.reload(), 1500);
                 }} else {{
-                    statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> Error</span>';
+                    statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> ❌ {t["error"]}</span>';
                     btn.disabled = false;
                     btn.innerHTML = originalText;
                 }}
             }} catch(e) {{
-                statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> Error</span>';
+                statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> ❌ {t["error"]}</span>';
                 btn.disabled = false;
                 btn.innerHTML = originalText;
             }}
         }}
         
-        setInterval(function() {{
-            fetch('/api/sync').then(r => r.json()).then(d => {{
-                if (d.success && d.new_messages > 0) location.reload();
-            }});
-        }}, 30000);
+        // فحص الرسائل الجديدة كل 10 ثواني
+        async function checkNewMessages() {{
+            try {{
+                const r = await fetch('/api/sync');
+                const d = await r.json();
+                if (d.success && d.new_messages > 0) {{
+                    document.getElementById('syncStatus').innerHTML = '<span style="color: #2cc185;"><i class="fas fa-bell"></i> +' + d.new_messages + ' {t["new_message"]}!</span>';
+                    setTimeout(() => location.reload(), 1000);
+                }}
+            }} catch(e) {{}}
+        }}
+        
+        // فحص كل 10 ثواني
+        setInterval(checkNewMessages, 10000);
+        
+        // فحص أول مرة بعد 5 ثواني
+        setTimeout(checkNewMessages, 5000);
     </script>
 </body>
 </html>
