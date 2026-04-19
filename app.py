@@ -2422,6 +2422,18 @@ def user_public_sms_page():
             </tr>
         '''
     
+    # تجهيز رسالة "لا توجد رسائل"
+    empty_message = '''
+    <tr>
+        <td colspan="6" style="text-align: center; padding: 50px;">
+            <i class="far fa-comment-dots" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>
+            <span style="color: #8b6baf;">No messages found</span>
+        </td>
+    </tr>
+    '''
+    
+    table_body = rows if rows else empty_message
+    
     return f'''
 <!DOCTYPE html>
 <html dir="{'rtl' if lang == 'ar' else 'ltr'}">
@@ -2647,17 +2659,11 @@ def user_public_sms_page():
                         <th>CLI</th>
                         <th>SMS</th>
                         <th>My Payout</th>
-                    </thead>
-<tbody>
-    {rows if rows else '''
-    <tr>
-        <td colspan="6" style="text-align: center; padding: 50px;">
-            <i class="far fa-comment-dots" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>
-            <span style="color: #8b6baf;">No messages found</span>
-        </td>
-    </tr>
-    '''}
-</tbody>
+                    </tr>
+                </thead>
+                <tbody>
+                    {table_body}
+                </tbody>
             </table>
         </div>
         
