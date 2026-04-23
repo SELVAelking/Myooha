@@ -4764,14 +4764,7 @@ def user_my_number_page():
                         </tr>
                     </thead>
                     <tbody>
-                        {rows if rows else f'''
-<tr>
-    <td colspan="3" style="text-align: center; padding: 50px;">
-        <i class="fas fa-phone-slash" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>
-        <p style="color: #8b6baf;">{t["no_numbers"]}</p>
-    </td>
-</tr>
-'''}
+                        {rows if rows else '<tr><td colspan="3" style="text-align: center; padding: 50px;"><i class="fas fa-phone-slash" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i><p style="color: #8b6baf;">' + t["no_numbers"] + '</p></td></tr>'}
                     </tbody>
                 </table>
             </div>
