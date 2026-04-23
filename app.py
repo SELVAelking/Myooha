@@ -18,12 +18,12 @@ import hashlib
 import re
 from collections import deque
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, request, make_response, session, redirect, url_for
+from flask import Flask, jsonify, request, make_response, session, redirect, url_for, Response
 from werkzeug.utils import secure_filename
 from telethon import TelegramClient, events
 from telethon.errors import ChannelPrivateError, ChatAdminRequiredError, FloodWaitError
 from functools import wraps
-
+import queue
 # ============================================================
 #                  الإعدادات
 # ============================================================
@@ -423,28 +423,48 @@ def save_message_to_db(msg_id, text, date):
         print(f'\n{"="*60}')
         print(f'📝 رسالة جديدة (ID: {msg_id})')
         print(f'📨 النص: {text[:150]}...')
+        print(f'{"="*60}')
         
-        # استخراج الأرقام
+        # ============================================================
+        # استخراج الأرقام بكل الطرق الممكنة
+        # ============================================================
+        
+        # 1. تنظيف النص - استبدال كل شيء غير رقم بمسافة
         clean_text = re.sub(r'[^\d]', ' ', text)
+        
+        # 2. استخراج كل الأرقام
         all_numbers = re.findall(r'\d+', clean_text)
+        
+        # 3. الأرقام الطويلة (8-15 خانة)
         numbers_in_message = [num for num in all_numbers if 8 <= len(num) <= 15]
         numbers_in_message = list(set(numbers_in_message))
         
+        # 4. أرقام مع + (بدون مسافات)
         plus_numbers = re.findall(r'\+\d{8,15}', text)
         for pn in plus_numbers:
             clean = re.sub(r'[^\d]', '', pn)
             if 8 <= len(clean) <= 15:
                 numbers_in_message.append(clean)
-        numbers_in_message = list(set(numbers_in_message))
         
-        print(f'🔍 الأرقام: {numbers_in_message}')
+        # 5. أرقام مفصولة بمسافات مع +
+        spaced_numbers = re.findall(r'\+\d{1,3}[\s.-]?\d{2,4}[\s.-]?\d{2,4}[\s.-]?\d{2,4}', text)
+        for sn in spaced_numbers:
+            clean = re.sub(r'[^\d]', '', sn)
+            if 8 <= len(clean) <= 15:
+                numbers_in_message.append(clean)
+        
+        numbers_in_message = list(set(numbers_in_message))
+        print(f'🔍 الأرقام المستخرجة: {numbers_in_message}')
         
         if numbers_in_message:
             for search_num in numbers_in_message:
-                # البحث عن المستخدمين
+                print(f'   🔎 البحث عن: {search_num}')
+                
+                # البحث عن تطابق كامل في user_numbers
                 cursor.execute('SELECT user_id, number FROM user_numbers WHERE number = ?', (search_num,))
                 user_rows = cursor.fetchall()
                 
+                # البحث عن آخر 4-8 أرقام
                 if not user_rows:
                     for length in [8, 7, 6, 5, 4]:
                         if len(search_num) >= length:
@@ -454,6 +474,17 @@ def save_message_to_db(msg_id, text, date):
                             if user_rows:
                                 break
                 
+                # البحث العكسي: هل أي رقم مخزن موجود في النص؟
+                if not user_rows:
+                    cursor.execute('SELECT user_id, number FROM user_numbers')
+                    all_db = cursor.fetchall()
+                    for db_row in all_db:
+                        db_num = db_row[1]
+                        if db_num and len(db_num) >= 8:
+                            if db_num in text or db_num[-8:] in text:
+                                user_rows.append(db_row)
+                
+                # حفظ النتائج مع منع التكرار
                 seen_users = set()
                 for row in user_rows:
                     user_id = row[0]
@@ -463,7 +494,7 @@ def save_message_to_db(msg_id, text, date):
                         continue
                     seen_users.add(user_id)
                     
-                    # منع التكرار: التحقق من آخر رسالة للمستخدم
+                    # منع تكرار نفس الرسالة للمستخدم خلال 60 ثانية
                     cursor.execute('''
                         SELECT id, code, received_at FROM user_codes 
                         WHERE user_id = ? 
@@ -474,12 +505,10 @@ def save_message_to_db(msg_id, text, date):
                     code = extract_otp_from_message(text)
                     notification_text = code if code else text[:100]
                     
-                    # إذا كانت آخر رسالة مشابهة وخلال دقيقة واحدة - تجاهل
                     if last:
                         last_code = last[1]
                         last_time = last[2]
                         if last_code == notification_text:
-                            # حساب الفرق بالثواني
                             try:
                                 last_dt = datetime.fromisoformat(last_time)
                                 now = datetime.now()
@@ -498,17 +527,21 @@ def save_message_to_db(msg_id, text, date):
                     add_notification(user_id, "📨 رسالة جديدة", "تم استلام رسالة", "otp")
                     print(f'      ✅ المستخدم {user_id} - {full_number}')
                     
-                    notify_user_new_sms(user_id, {
-                        'number': full_number,
-                        'code': notification_text,
-                        'received_at': datetime.now().isoformat()
-                    })
+                    # إرسال إشعار فوري للمستخدم عبر SSE
+                    try:
+                        notify_user_new_sms(user_id, {
+                            'number': full_number,
+                            'code': notification_text,
+                            'received_at': datetime.now().isoformat()
+                        })
+                    except:
+                        pass
         
         db_conn.commit()
         print(f'{"="*60}\n')
         return True
     except Exception as e:
-        print(f"❌ خطأ: {e}")
+        print(f"❌ خطأ في حفظ الرسالة: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -3573,7 +3606,7 @@ def owner_results_page():
                 <thead>
                     <tr><th>{t['user']}</th><th>{t['whatsapp']}</th><th>{t['status']}</th><th>{t['numbers']}</th><th>{t['actions']}</th></tr>
                 </thead>
-                <tbody>{rows if rows else empty_results_row}</tbody>
+                <tbody>{rows if rows else f'<tr><td colspan="5" style="text-align:center;">{t["no_messages"]}</td></tr>'}</tbody>
             </table>
         </div>
     </div>
@@ -4672,14 +4705,7 @@ def user_my_number_page():
         filter_options += f'<option value="{file_name}" {selected}>📁 {file_name}</option>'
     
     page_title = f'أرقام ملف: {filter_file}' if filter_file != 'all' else 'جميع الأرقام'
-    empty_numbers_row = f'''
-                    <tr>
-                        <td colspan="3" style="text-align: center; padding: 50px;">
-                            <i class="fas fa-phone-slash" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>
-                            <p style="color: #8b6baf;">{t["no_numbers"]}</p>
-                        </td>
-                    </tr>
-                    '''
+    
     return f'''
 <!DOCTYPE html>
 <html dir="{'rtl' if lang == 'ar' else 'ltr'}">
@@ -4771,8 +4797,15 @@ def user_my_number_page():
                         </tr>
                     </thead>
                     <tbody>
-    {rows if rows else empty_numbers_row}
-</tbody>
+                        {rows if rows else f'''
+                        <tr>
+                            <td colspan="3" style="text-align: center; padding: 50px;">
+                                <i class="fas fa-phone-slash" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>
+                                <p style="color: #8b6baf;">{t["no_numbers"]}</p>
+                            </td>
+                        </tr>
+                        '''}
+                    </tbody>
                 </table>
             </div>
         </div>
@@ -5173,6 +5206,56 @@ def send_support_message():
     add_notification(receiver_id, "💬 رسالة جديدة", f"لديك رسالة جديدة من {session['username']}", "info")
     
     return jsonify({'success': True})
+# ============================================================
+#                      Server-Sent Events (SSE)
+# ============================================================
+
+sse_clients = {}
+
+@app.route('/api/sse/connect/<int:user_id>')
+@login_required
+def sse_connect(user_id):
+    """اتصال SSE للمستخدم"""
+    def event_stream():
+        q = queue.Queue()
+        sse_clients[user_id] = q
+        print(f'🔗 مستخدم {user_id} متصل بـ SSE')
+        
+        try:
+            yield f"data: {json.dumps({'type': 'connected', 'message': 'تم الاتصال'})}\n\n"
+            
+            while True:
+                try:
+                    message = q.get(timeout=30)
+                    yield f"data: {json.dumps(message)}\n\n"
+                except queue.Empty:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+        finally:
+            if user_id in sse_clients:
+                del sse_clients[user_id]
+                print(f'🔌 مستخدم {user_id} قطع اتصال SSE')
+    
+    return Response(
+        event_stream(),
+        mimetype="text/event-stream",
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        }
+    )
+
+def notify_user_new_sms(user_id, data):
+    """إرسال إشعار فوري للمستخدم عن طريق SSE"""
+    if user_id in sse_clients:
+        try:
+            sse_clients[user_id].put({
+                'type': 'new_sms',
+                'data': data
+            })
+            print(f'📤 تم إرسال إشعار SSE للمستخدم {user_id}')
+        except:
+            pass
  # ============================================================
 #                      API Routes
 # ============================================================
