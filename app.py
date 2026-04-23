@@ -4,6 +4,7 @@
 """
 SELVA & OTP - Complete Management System
 النسخة النهائية الكاملة بجميع المميزات + نظام Queue لإعادة التوجيه
++ نظام الأدوار (Owner, Admin, Test, User, Client)
 """
 
 import sys
@@ -27,11 +28,11 @@ from functools import wraps
 #                  الإعدادات
 # ============================================================
 
-API_ID = 33437938
-API_HASH = '4aa02cced89e0eb1c509ac1f5336d5b7'
-CHANNEL_ID = -1003889045343
-SESSION_NAME = 'selva_user_session'
-BOT_TOKEN = '8630472381:AAGUK1apd8IHJnq1_O_JPiM6nNnABnGdvFc'
+API_ID = 30827918
+API_HASH = '096144aab00ad92c5d9bb6160cd8bd81'
+CHANNEL_ID = -1003693518087
+SESSION_NAME = 'sela_user_session'
+BOT_TOKEN = '8569083733:AAFCfoxnzvhdzWkcDCkUCqpRonxBACIOByk'
 
 OWNER_USERNAME = 'mohaymen'
 OWNER_PASSWORD = 'mohaymen'
@@ -74,7 +75,8 @@ def owner_required(f):
     def decorated_function(*args, **kwargs):
         if 'user_id' not in session:
             return redirect('/login')
-        if session.get('username') != OWNER_USERNAME:
+        role = session.get('role', 'user')
+        if role != 'owner' and role != 'admin':
             return redirect('/dashboard')
         return f(*args, **kwargs)
     return decorated_function
@@ -165,11 +167,12 @@ def init_database():
             created_at TEXT,
             last_login TEXT,
             parent_id INTEGER DEFAULT 0,
-            is_client INTEGER DEFAULT 0
+            is_client INTEGER DEFAULT 0,
+            role TEXT DEFAULT 'user'
         )
     ''')
     
-    for col in ['email', 'profile_pic', 'theme', 'language', 'parent_id', 'is_client']:
+    for col in ['email', 'profile_pic', 'theme', 'language', 'parent_id', 'is_client', 'role']:
         try:
             cursor.execute(f'ALTER TABLE users ADD COLUMN {col} TEXT')
         except:
@@ -342,8 +345,8 @@ def init_database():
     cursor.execute('SELECT id FROM users WHERE username = ?', (OWNER_USERNAME,))
     if not cursor.fetchone():
         cursor.execute('''
-            INSERT INTO users (username, password, number_limit, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO users (username, password, number_limit, role, created_at)
+            VALUES (?, ?, ?, 'owner', ?)
         ''', (OWNER_USERNAME, hash_password(OWNER_PASSWORD), 999999, datetime.now().isoformat()))
         conn.commit()
         print(f'✅ تم إنشاء حساب المالك: {OWNER_USERNAME}')
@@ -405,26 +408,109 @@ def save_codes_for_user(user_id, number, code):
 def save_message_to_db(msg_id, text, date):
     try:
         cursor = db_conn.cursor()
+        
+        # التحقق من وجود الرسالة مسبقاً في messages
+        cursor.execute('SELECT id FROM messages WHERE message_id = ?', (msg_id,))
+        if cursor.fetchone():
+            print(f'⚠️ الرسالة {msg_id} موجودة مسبقاً - تم تجاهلها')
+            return True
+        
         cursor.execute('''
-            INSERT OR REPLACE INTO messages (message_id, text, date, saved_at, is_deleted)
+            INSERT INTO messages (message_id, text, date, saved_at, is_deleted)
             VALUES (?, ?, ?, ?, 0)
         ''', (msg_id, text, date, datetime.now().isoformat()))
         
-        code = extract_otp_from_message(text)
-        if code:
-            cursor.execute('''
-                SELECT user_id FROM user_numbers 
-                WHERE ? LIKE '%' || substr(number, -4) 
-                OR number LIKE '%' || ?
-            ''', (text, code))
-            user_rows = cursor.fetchall()
-            for row in user_rows:
-                save_codes_for_user(row[0], '', code)
+        print(f'\n{"="*60}')
+        print(f'📝 رسالة جديدة (ID: {msg_id})')
+        print(f'📨 النص: {text[:150]}...')
+        
+        # استخراج الأرقام
+        clean_text = re.sub(r'[^\d]', ' ', text)
+        all_numbers = re.findall(r'\d+', clean_text)
+        numbers_in_message = [num for num in all_numbers if 8 <= len(num) <= 15]
+        numbers_in_message = list(set(numbers_in_message))
+        
+        plus_numbers = re.findall(r'\+\d{8,15}', text)
+        for pn in plus_numbers:
+            clean = re.sub(r'[^\d]', '', pn)
+            if 8 <= len(clean) <= 15:
+                numbers_in_message.append(clean)
+        numbers_in_message = list(set(numbers_in_message))
+        
+        print(f'🔍 الأرقام: {numbers_in_message}')
+        
+        if numbers_in_message:
+            for search_num in numbers_in_message:
+                # البحث عن المستخدمين
+                cursor.execute('SELECT user_id, number FROM user_numbers WHERE number = ?', (search_num,))
+                user_rows = cursor.fetchall()
+                
+                if not user_rows:
+                    for length in [8, 7, 6, 5, 4]:
+                        if len(search_num) >= length:
+                            suffix = search_num[-length:]
+                            cursor.execute('SELECT user_id, number FROM user_numbers WHERE number LIKE ?', (f'%{suffix}',))
+                            user_rows = cursor.fetchall()
+                            if user_rows:
+                                break
+                
+                seen_users = set()
+                for row in user_rows:
+                    user_id = row[0]
+                    full_number = row[1]
+                    
+                    if user_id in seen_users:
+                        continue
+                    seen_users.add(user_id)
+                    
+                    # منع التكرار: التحقق من آخر رسالة للمستخدم
+                    cursor.execute('''
+                        SELECT id, code, received_at FROM user_codes 
+                        WHERE user_id = ? 
+                        ORDER BY id DESC LIMIT 1
+                    ''', (user_id,))
+                    last = cursor.fetchone()
+                    
+                    code = extract_otp_from_message(text)
+                    notification_text = code if code else text[:100]
+                    
+                    # إذا كانت آخر رسالة مشابهة وخلال دقيقة واحدة - تجاهل
+                    if last:
+                        last_code = last[1]
+                        last_time = last[2]
+                        if last_code == notification_text:
+                            # حساب الفرق بالثواني
+                            try:
+                                last_dt = datetime.fromisoformat(last_time)
+                                now = datetime.now()
+                                diff = (now - last_dt).total_seconds()
+                                if diff < 60:
+                                    print(f'      ⏭️ المستخدم {user_id} - رسالة مكررة (قبل {diff:.0f} ثانية)')
+                                    continue
+                            except:
+                                pass
+                    
+                    cursor.execute('''
+                        INSERT INTO user_codes (user_id, number, code, received_at)
+                        VALUES (?, ?, ?, ?)
+                    ''', (user_id, full_number, notification_text, datetime.now().isoformat()))
+                    
+                    add_notification(user_id, "📨 رسالة جديدة", "تم استلام رسالة", "otp")
+                    print(f'      ✅ المستخدم {user_id} - {full_number}')
+                    
+                    notify_user_new_sms(user_id, {
+                        'number': full_number,
+                        'code': notification_text,
+                        'received_at': datetime.now().isoformat()
+                    })
         
         db_conn.commit()
+        print(f'{"="*60}\n')
         return True
     except Exception as e:
-        print(f"خطأ في حفظ الرسالة: {e}")
+        print(f"❌ خطأ: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def get_user_linked_channels(user_id):
@@ -443,7 +529,6 @@ def get_all_active_linked_channels():
         SELECT DISTINCT channel_id FROM linked_channels WHERE is_active = 1
     ''')
     return [row[0] for row in cursor.fetchall()]
-
 # ============================================================
 #                      تيليجرام مع Queue
 # ============================================================
@@ -485,24 +570,21 @@ async def forward_worker():
     while True:
         try:
             if message_queue and bot_client:
-                # جيب رسالة من القائمة
                 message_text = message_queue.popleft()
                 channels = get_all_active_linked_channels()
                 
                 if channels:
                     print(f'📤 جاري إرسال الرسالة إلى {len(channels)} قناة...')
                     
-                    # إرسال لأول قناة
                     first_channel = channels[0]
                     try:
                         entity = await bot_client.get_entity(int(first_channel))
                         await bot_client.send_message(entity, message_text)
                         print(f'   ✅ تم الإرسال إلى: {first_channel}')
                         
-                        # إعادة توجيه لباقي القنوات مع تأخير
                         for i, channel_id in enumerate(channels[1:], 1):
                             try:
-                                await asyncio.sleep(2)  # تأخير 2 ثانية بين كل رسالة
+                                await asyncio.sleep(2)
                                 entity = await bot_client.get_entity(int(channel_id))
                                 await bot_client.send_message(entity, message_text)
                                 print(f'   ✅ تم الإرسال إلى: {channel_id} ({i+1}/{len(channels)})')
@@ -524,21 +606,42 @@ async def forward_worker():
                     except Exception as e:
                         print(f'   ❌ فشل الإرسال: {e}')
             
-            await asyncio.sleep(1)  # فحص كل ثانية
+            await asyncio.sleep(1)
             
         except Exception as e:
             print(f'❌ خطأ في العامل: {e}')
             await asyncio.sleep(5)
 
 def start_forwarding_worker():
-    """بدء عامل إعادة التوجيه"""
     global forwarding_task, loop
     if loop:
         forwarding_task = loop.create_task(forward_worker())
         print('✅ عامل إعادة التوجيه جاهز')
+async def auto_sync_worker():
+    """عامل مزامنة تلقائية في الخلفية"""
+    await asyncio.sleep(10)  # انتظار 10 ثواني قبل أول مزامنة
+    
+    while True:
+        try:
+            print('🔄 جاري المزامنة التلقائية...')
+            result = await fetch_and_save_messages()
+            if result['success'] and result['new_messages'] > 0:
+                print(f'✅ تمت المزامنة التلقائية: {result["new_messages"]} رسالة جديدة')
+            else:
+                print(f'ℹ️ لا توجد رسائل جديدة في المزامنة التلقائية')
+        except Exception as e:
+            print(f'❌ خطأ في المزامنة التلقائية: {e}')
+        
+        await asyncio.sleep(60)  # انتظار 60 ثانية قبل المزامنة التالية
+
+def start_auto_sync():
+    """بدء عامل المزامنة التلقائية"""
+    global loop
+    if loop:
+        loop.create_task(auto_sync_worker())
+        print('✅ عامل المزامنة التلقائية جاهز (كل 60 ثانية)')
 
 def add_to_queue(message_text):
-    """إضافة رسالة إلى قائمة الانتظار"""
     message_queue.append(message_text)
     print(f'📥 تمت إضافة رسالة إلى قائمة الانتظار (الإجمالي: {len(message_queue)})')
 
@@ -547,8 +650,31 @@ def start_message_listener():
     async def handler(event):
         msg = event.message
         if msg.message:
-            print(f'📨 رسالة جديدة: {msg.message[:50]}...')
-            save_message_to_db(msg.id, msg.message, msg.date.isoformat())
+            print(f'\n{"="*60}')
+            print(f'📨 رسالة جديدة من تيليجرام!')
+            print(f'{"="*60}')
+            print(f'📝 النص: {msg.message[:200]}...')
+            
+            # انتظر قليلاً للتأكد من اكتمال الرسالة
+            await asyncio.sleep(2)
+            
+            # استخدم نفس آلية المزامنة
+            try:
+                entity = await user_client.get_entity(CHANNEL_ID)
+                # جلب آخر رسالة فقط
+                messages = await user_client.get_messages(entity, limit=1)
+                if messages and messages[0].message:
+                    latest_msg = messages[0]
+                    print(f'🔄 جاري معالجة الرسالة عبر get_messages...')
+                    result = save_message_to_db(latest_msg.id, latest_msg.message, latest_msg.date.isoformat())
+                    if result:
+                        print(f'✅ تم حفظ الرسالة وربطها بالمستخدمين')
+                    else:
+                        print(f'❌ فشل حفظ الرسالة')
+            except Exception as e:
+                print(f'❌ خطأ في جلب الرسالة: {e}')
+                # محاولة مباشرة كاحتياط
+                save_message_to_db(msg.id, msg.message, msg.date.isoformat())
             
             cursor = db_conn.cursor()
             cursor.execute('''
@@ -557,9 +683,9 @@ def start_message_listener():
             ''', (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
             db_conn.commit()
             
-            # إضافة للقائمة بدل الإرسال الفوري
             add_to_queue(msg.message)
             add_owner_notification(f'📨 رسالة جديدة: {msg.message[:30]}...')
+            print(f'{"="*60}\n')
 
 def init_telegram():
     global user_client, bot_client, loop
@@ -581,41 +707,40 @@ def init_telegram():
             start_forwarding_worker()
         
         start_message_listener()
-        print('🔔 تم تفعيل مراقبة الرسائل الجديدة')
+        start_auto_sync()  # ← إضافة هذا السطر
+        print('🔔 تم تفعيل مراقبة الرسائل الجديدة والمزامنة التلقائية')
 
 async def fetch_and_save_messages():
     global user_client
     try:
         print(f'📡 جاري جلب الرسائل من القناة {CHANNEL_ID}...')
         entity = await user_client.get_entity(CHANNEL_ID)
-        messages = await user_client.get_messages(entity, limit=100)
-        print(f'📨 عدد الرسائل المستلمة: {len(messages)}')
         
         count = 0
-        for msg in messages:
+        # استخدام iter_messages بدلاً من get_messages لتجنب مشاكل البوت
+        async for msg in user_client.iter_messages(entity, limit=50):
             if msg.message:
                 if save_message_to_db(msg.id, msg.message, msg.date.isoformat()):
                     count += 1
         
-        cursor = db_conn.cursor()
-        cursor.execute('''
-            INSERT OR REPLACE INTO stats (key, value) 
-            VALUES ('last_sync', ?)
-        ''', (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
-        db_conn.commit()
+        if count > 0:
+            cursor = db_conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO stats (key, value) 
+                VALUES ('last_sync', ?)
+            ''', (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
+            db_conn.commit()
         
         print(f'💾 تم حفظ {count} رسالة في قاعدة البيانات')
         return {'success': True, 'new_messages': count}
     except Exception as e:
         print(f'❌ خطأ في جلب الرسائل: {e}')
         return {'success': False, 'error': str(e)}
-
 # ============================================================
 #                      الأنماط الأساسية
 # ============================================================
 
-def get_base_style(theme='light'):  # خليتها light دايمًا
-    # لو عايز تجبرها على الأبيض دائمًا، ممكن ترجع الـ Light Mode مباشرة
+def get_base_style(theme='light'):
     return '''
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -800,6 +925,8 @@ LANGUAGES = {
         'dashboard': 'لوحة التحكم',
         'welcome': 'مرحباً',
         'owner_account': 'حساب المالك',
+        'admin_account': 'حساب أدمن',
+        'test_account': 'حساب Test',
         'user_account': 'حساب مستخدم',
         'client_account': 'حساب عميل',
         'numbers': 'الأرقام',
@@ -920,6 +1047,8 @@ LANGUAGES = {
         'forwarding_info': 'سيتم إعادة توجيه جميع رسائل Public SMS تلقائياً إلى القنوات المرتبطة',
         'queue_status': 'حالة قائمة الانتظار',
         'messages_in_queue': 'رسائل في الانتظار',
+        'create_admin': 'إنشاء أدمن',
+        'create_test': 'إنشاء Test',
     },
     'en': {
         'app_name': 'SELVA & Panel',
@@ -934,6 +1063,8 @@ LANGUAGES = {
         'dashboard': 'Dashboard',
         'welcome': 'Welcome',
         'owner_account': 'Owner Account',
+        'admin_account': 'Admin Account',
+        'test_account': 'Test Account',
         'user_account': 'User Account',
         'client_account': 'Client Account',
         'numbers': 'Numbers',
@@ -1054,6 +1185,8 @@ LANGUAGES = {
         'forwarding_info': 'All Public SMS messages will be automatically forwarded to linked channels',
         'queue_status': 'Queue Status',
         'messages_in_queue': 'Messages in queue',
+        'create_admin': 'Create Admin',
+        'create_test': 'Create Test',
     }
 }
 
@@ -1061,7 +1194,6 @@ def get_text(key, lang=None):
     if not lang:
         lang = session.get('lang', 'ar')
     return LANGUAGES.get(lang, LANGUAGES['ar']).get(key, key)
-
 # ============================================================
 #                      صفحات المصادقة
 # ============================================================
@@ -1520,7 +1652,6 @@ def get_blocked_page(lang='ar'):
 </body>
 </html>
 '''
-
 # ============================================================
 #                      لوحة التحكم
 # ============================================================
@@ -1532,21 +1663,35 @@ def get_dashboard_page(user):
     is_owner = user[1] == OWNER_USERNAME
     is_client_user = user[13] == 1 if len(user) > 13 else False
     
+    role = 'user'
+    if len(user) > 14 and user[14]:
+        role = user[14]
+    
+    if is_owner:
+        role = 'owner'
+    
     numbers_count = get_user_numbers_count(user[0])
     user_limit = get_user_limit(user[0])
     unread_notifications = get_unread_notifications_count(user[0])
     unread_messages = get_unread_messages_count(user[0])
     
-    if is_owner:
+    if role == 'owner' or role == 'admin':
         sidebar_items = [
             ('/owner/add-file', '📁 Add file'),
-            ('/owner/delete-file', '🗑️ Delet file'),
+            ('/owner/delete-file', '🗑️ Delete file'),
             ('/owner/broadcast', '📢 Broadcast'),
             ('/owner/create-account', '👤 Create account'),
             ('/owner/increase-limit', '⬆️ Increase Limit'),
             ('/owner/results', '📊 Results'),
             ('/owner/add-number-test', '🧪 Add number test'),
+            ('/owner/create-admin', '👑 Create Admin'),
+            ('/owner/create-test', '🧪 Create Test'),
             ('/activity-log', '📝 Activity Log'),
+        ]
+    elif role == 'test':
+        sidebar_items = [
+            ('/user/test-number', '🧪 Test number'),
+            ('/user/public-sms', '🌐 Public sms'),
         ]
     elif is_client_user:
         sidebar_items = [
@@ -1560,14 +1705,14 @@ def get_dashboard_page(user):
         
         sidebar_items = [
             ('/user/add-number', '➕ Add number'),
-            ('/user/delete-number', '➖ Delet number'),
+            ('/user/delete-number', '➖ Delete number'),
             ('/user/my-number', '📱 My number'),
             ('/user/my-file', '📂 My file number'),
-            ('/user/delete-file', '🗑️ Delet file number'),
-            ('/user/client', '👤 Cilent'),
-            ('/user/add-number-client', '📱 Add number cilent'),
+            ('/user/delete-file', '🗑️ Delete file number'),
+            ('/user/client', '👤 Client'),
+            ('/user/add-number-client', '📱 Add number client'),
             ('/user/test-number', '🧪 Test number'),
-            ('/user/linking-channels', '🔗 Linking the codes to the channel'),
+            ('/user/linking-channels', '🔗 Linking channels'),
             ('/user/my-sms', '💬 My sms'),
             ('/user/public-sms', '🌐 Public sms'),
             ('/notifications', f'🔔 Notifications{notif_badge}'),
@@ -1585,6 +1730,17 @@ def get_dashboard_page(user):
     
     queue_size = len(message_queue)
     queue_badge = f' <span class="queue-badge">{queue_size} {t["messages_in_queue"]}</span>' if queue_size > 0 else ''
+    
+    if role == 'owner':
+        account_type = '👑 Owner Account'
+    elif role == 'admin':
+        account_type = '👑 Admin Account'
+    elif role == 'test':
+        account_type = '🧪 Test Account'
+    elif is_client_user:
+        account_type = t['client_account']
+    else:
+        account_type = t['user_account']
     
     return f'''
 <!DOCTYPE html>
@@ -1633,7 +1789,7 @@ def get_dashboard_page(user):
     <div class="container">
         <div class="card">
             <h2>{t['welcome']}, {user[1]}!</h2>
-            <p>{t['owner_account'] if is_owner else (t['client_account'] if is_client_user else t['user_account'])}</p>
+            <p>{account_type}</p>
             <p style="margin-top: 10px;"><i class="fas fa-sync-alt"></i> {t['last_sync']}: {last_sync_time}</p>
         </div>
         
@@ -1650,7 +1806,6 @@ def get_dashboard_page(user):
             document.getElementById('overlay').classList.toggle('active');
         }}
         
-        // تحديث حالة قائمة الانتظار كل 5 ثواني
         setInterval(async function() {{
             try {{
                 const r = await fetch('/api/queue/status');
@@ -1664,7 +1819,6 @@ def get_dashboard_page(user):
 </body>
 </html>
 '''
-
 # ============================================================
 #                      صفحات المستخدم
 # ============================================================
@@ -1722,7 +1876,6 @@ def user_add_number_page():
     if not files_html:
         files_html = f'<div class="card"><p>{t["no_files_available"]}</p></div>'
     
-    # إحصائيات عامة
     total_numbers = get_user_numbers_count(user_id)
     total_files_with_numbers = len(set([f[0] for f in files if f[2] > 0]))
     
@@ -1736,11 +1889,7 @@ def user_add_number_page():
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     {get_base_style(theme)}
     <style>
-        .header {{
-            background: #ffffff;
-            border-bottom: 1px solid #e8e0f0;
-        }}
-        
+        .header {{ background: #ffffff; border-bottom: 1px solid #e8e0f0; }}
         .info-banner {{
             background: linear-gradient(135deg, #9d4edd, #7b2cbf);
             color: white;
@@ -1748,23 +1897,9 @@ def user_add_number_page():
             border-radius: 20px;
             margin-bottom: 25px;
         }}
-        
-        .info-banner h3 {{
-            color: white;
-            margin-bottom: 10px;
-        }}
-        
-        .stats-mini {{
-            display: flex;
-            gap: 30px;
-            margin-top: 15px;
-        }}
-        
-        .stats-mini div {{
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }}
+        .info-banner h3 {{ color: white; margin-bottom: 10px; }}
+        .stats-mini {{ display: flex; gap: 30px; margin-top: 15px; }}
+        .stats-mini div {{ display: flex; align-items: center; gap: 8px; }}
     </style>
 </head>
 <body>
@@ -1842,76 +1977,89 @@ def user_delete_number_page():
 </html>
 '''
 
-@app.route('/user/my-number')
+@app.route('/user/add-numbers/<int:file_id>')
 @login_required
-def user_my_number_page():
+def user_add_numbers(file_id):
+    if is_client(session['user_id']):
+        return redirect('/dashboard')
+    
+    user_id = session['user_id']
+    cursor = db_conn.cursor()
+    
+    cursor.execute('SELECT COUNT(*) FROM user_numbers WHERE user_id = ? AND file_id = ?', (user_id, file_id))
+    file_count = cursor.fetchone()[0]
+    
+    FILE_LIMIT = 150
+    
+    if file_count >= FILE_LIMIT:
+        return redirect('/user/add-number')
+    
+    cursor.execute('SELECT numbers FROM number_files WHERE id = ?', (file_id,))
+    result = cursor.fetchone()
+    
+    if result:
+        all_numbers = json.loads(result[0])
+        remaining_in_file = FILE_LIMIT - file_count
+        numbers_to_add = []
+        
+        for num in all_numbers:
+            cursor.execute('SELECT id FROM user_numbers WHERE user_id = ? AND file_id = ? AND number = ?', 
+                          (user_id, file_id, num))
+            if not cursor.fetchone():
+                numbers_to_add.append(num)
+                if len(numbers_to_add) >= remaining_in_file:
+                    break
+        
+        added = 0
+        for num in numbers_to_add:
+            cursor.execute('''
+                INSERT INTO user_numbers (user_id, file_id, number, added_at)
+                VALUES (?, ?, ?, ?)
+            ''', (user_id, file_id, num, datetime.now().isoformat()))
+            if cursor.rowcount > 0:
+                added += 1
+        
+        db_conn.commit()
+        log_activity(user_id, 'add_numbers', f'Added {added} numbers from file {file_id}')
+    
+    return redirect('/user/my-number')
+@app.route('/user/my-sms')
+@login_required
+def user_my_sms_page():
+    if is_client(session['user_id']):
+        return redirect('/dashboard')
+    
     user_id = session['user_id']
     lang = session.get('lang', 'ar')
     t = LANGUAGES[lang]
     theme = 'light'
     
-    if is_client(user_id):
-        cursor = db_conn.cursor()
-        cursor.execute('''
-            SELECT cn.number, nf.display_name, cn.added_at, cn.file_id
-            FROM client_numbers cn
-            LEFT JOIN number_files nf ON cn.file_id = nf.id
-            WHERE cn.client_id = ?
-            ORDER BY cn.added_at DESC
-        ''', (user_id,))
-        numbers = cursor.fetchall()
-    else:
-        cursor = db_conn.cursor()
-        cursor.execute('''
-            SELECT un.number, nf.display_name, un.added_at, un.file_id
-            FROM user_numbers un
-            LEFT JOIN number_files nf ON un.file_id = nf.id
-            WHERE un.user_id = ?
-            ORDER BY un.added_at DESC
-        ''', (user_id,))
-        numbers = cursor.fetchall()
+    cursor = db_conn.cursor()
+    cursor.execute('''
+        SELECT number, code, received_at
+        FROM user_codes
+        WHERE user_id = ?
+        ORDER BY received_at DESC
+        LIMIT 100
+    ''', (user_id,))
+    codes = cursor.fetchall()
     
-    # إحصائيات
-    numbers_count = len(numbers)
-    
-    # تجميع حسب الملفات
-    file_stats = {}
-    for n in numbers:
-        file_name = n[1] or t['unknown']
-        if file_name not in file_stats:
-            file_stats[file_name] = {'count': 0, 'file_id': n[3]}
-        file_stats[file_name]['count'] += 1
-    
-    # عرض كل الأرقام بدون تحديد LIMIT
     rows = ''
-    for n in numbers:  # كل الأرقام
+    for c in codes:
+        number = c[0] if c[0] else t['unknown']
+        code_text = c[1] if c[1] else ''
+        date_text = c[2][:16] if c[2] else ''
+        
         rows += f'''
             <tr>
-                <td style="direction: ltr; font-family: monospace;">{n[0]}</td>
-                <td>
-                    <span style="display: flex; align-items: center; gap: 5px;">
-                        <i class="fas fa-folder" style="color: #9d4edd;"></i>
-                        {n[1] or t['unknown']}
-                    </span>
-                </td>
-                <td style="white-space: nowrap;">{n[2][:16] if n[2] else ''}</td>
+                <td style="direction: ltr; font-family: monospace; font-size: 1.1rem;">{number}</td>
+                <td><strong style="color: #9d4edd;">{code_text}</strong></td>
+                <td>{date_text}</td>
             </tr>
         '''
     
-    # عرض الملفات مع عدد الأرقام
-    files_summary = ''
-    for file_name, stats in file_stats.items():
-        files_summary += f'''
-            <div class="stat-card" style="text-align: center;">
-                <i class="fas fa-folder" style="font-size: 1.5rem; color: #9d4edd; margin-bottom: 8px;"></i>
-                <h4 style="margin: 5px 0;">{file_name}</h4>
-                <div class="number" style="font-size: 1.5rem;">{stats['count']}</div>
-                <small>رقم</small>
-                <div style="margin-top: 5px;">
-                    <span class="badge badge-success">{min(stats['count'], 150)}/150</span>
-                </div>
-            </div>
-        '''
+    if not rows:
+        rows = f'<tr><td colspan="3" style="text-align:center; padding: 40px;"><i class="fas fa-inbox" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>{t["no_codes"]}</td></tr>'
     
     return f'''
 <!DOCTYPE html>
@@ -1919,170 +2067,1017 @@ def user_my_number_page():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['my_number']} - {t['app_name']}</title>
+    <title>{t['my_sms']} - {t['app_name']}</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     {get_base_style(theme)}
     <style>
-        .header {{
-            background: #ffffff;
-            border-bottom: 1px solid #e8e0f0;
-        }}
-        
-        .main-stats {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-bottom: 25px;
-        }}
-        
-        .main-stat-card {{
-            background: linear-gradient(135deg, #9d4edd, #7b2cbf);
+        .header {{ background: #ffffff; border-bottom: 1px solid #e8e0f0; }}
+        .sms-container {{ max-width: 1200px; margin: 0 auto; }}
+        .table-wrapper {{ overflow-x: auto; border-radius: 16px; background: #ffffff; border: 1px solid #e8e0f0; }}
+        .sms-table {{ width: 100%; border-collapse: collapse; }}
+        .sms-table th {{ background: #f8f5ff; padding: 14px 15px; font-weight: 600; color: #5a189a; border-bottom: 2px solid #d9c2f0; text-align: right; }}
+        .sms-table td {{ padding: 12px 15px; border-bottom: 1px solid #f0e8fa; }}
+        .sms-table tr:hover td {{ background: #fdfbff; }}
+        .stats-card {{ background: linear-gradient(135deg, #9d4edd, #7b2cbf); color: white; padding: 20px; border-radius: 20px; margin-bottom: 25px; }}
+        .stats-card h3 {{ color: white; margin-bottom: 10px; }}
+        .action-bar {{ display: flex; gap: 10px; margin-bottom: 15px; }}
+        .btn-sync {{ background: #2cc185; box-shadow: 0 4px 10px rgba(44, 193, 133, 0.2); }}
+        .btn-sync:hover {{ background: #25a86f; }}
+        .sync-status {{ margin-left: 15px; font-size: 0.9rem; }}
+        .new-message-alert {{
+            background: #2cc185;
             color: white;
-            padding: 20px;
-            border-radius: 20px;
-            text-align: center;
+            padding: 10px 20px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+            display: none;
+            animation: pulse 1s infinite;
         }}
-        
-        .main-stat-card h3 {{
-            color: white;
-            margin-bottom: 10px;
-            font-size: 1rem;
+        @keyframes pulse {{
+            0% {{ opacity: 1; }}
+            50% {{ opacity: 0.7; }}
+            100% {{ opacity: 1; }}
         }}
-        
-        .main-stat-card .number {{
-            font-size: 2.5rem;
-            font-weight: bold;
+        .connection-status {{
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #2cc185;
+            margin-left: 10px;
         }}
-        
-        .files-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-            gap: 15px;
-            margin: 20px 0;
-        }}
-        
-        .table-wrapper {{
-            overflow-x: auto;
-            border-radius: 16px;
-            background: #ffffff;
-            border: 1px solid #e8e0f0;
-            max-height: 600px;
-            overflow-y: auto;
-        }}
-        
-        .numbers-table {{
-            width: 100%;
-            border-collapse: collapse;
-            min-width: 600px;
-        }}
-        
-        .numbers-table th {{
-            background: #f8f5ff;
-            padding: 14px 15px;
-            font-weight: 600;
-            color: #5a189a;
-            border-bottom: 2px solid #d9c2f0;
-            position: sticky;
-            top: 0;
-            z-index: 10;
-        }}
-        
-        .numbers-table td {{
-            padding: 12px 15px;
-            border-bottom: 1px solid #f0e8fa;
-        }}
-        
-        .numbers-table tr:hover td {{
-            background: #fdfbff;
-        }}
-        
-        .action-buttons {{
-            display: flex;
-            gap: 10px;
-            justify-content: center;
-            margin-top: 20px;
+        .connection-status.disconnected {{
+            background: #ff5e5e;
         }}
     </style>
 </head>
 <body>
     <div class="header">
-        <a href="/dashboard" class="back-btn">
-            <i class="fas fa-arrow-right"></i> {t['back']}
-        </a>
-        <h1 style="color: #5a189a;">📱 {t['my_number']}</h1>
-        <div></div>
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1 style="color: #5a189a;">
+            💬 {t['my_sms']}
+            <span id="connectionStatus" class="connection-status" title="متصل - التحديث الفوري نشط"></span>
+        </h1>
+        <div>
+            <button class="btn btn-sync" onclick="syncMySMS()" id="syncBtn">
+                <i class="fas fa-sync-alt"></i> Sync
+            </button>
+        </div>
     </div>
     
-    <div class="container" style="max-width: 1400px;">
-        <!-- الإحصائيات الرئيسية -->
-        <div class="main-stats">
-            <div class="main-stat-card">
-                <h3><i class="fas fa-database"></i> إجمالي الأرقام</h3>
-                <div class="number">{numbers_count}</div>
-            </div>
-            <div class="main-stat-card" style="background: linear-gradient(135deg, #2cc185, #1a9e6a);">
-                <h3><i class="fas fa-folder-open"></i> عدد الملفات</h3>
-                <div class="number">{len(file_stats)}</div>
-            </div>
+    <div class="container sms-container">
+        <div class="stats-card">
+            <h3><i class="fas fa-envelope"></i> رسائلك الخاصة</h3>
+            <p>تظهر هنا جميع الرسائل التي تحتوي على أرقامك المخزنة في النظام</p>
+            <p style="margin-top: 10px; font-size: 1.2rem;">
+                عدد الرسائل: <strong id="messagesCount">{len(codes)}</strong>
+                <span id="syncStatus" class="sync-status"></span>
+            </p>
+            <p style="margin-top: 5px; font-size: 0.9rem; opacity: 0.9;">
+                <i class="fas fa-bolt"></i> اضغط Sync لتحديث الرسائل يدوياً
+            </p>
         </div>
         
-        <!-- إحصائيات الملفات -->
-        <div class="card">
-            <h2 style="display: flex; align-items: center; gap: 10px;">
-                <i class="fas fa-chart-pie"></i>
-                توزيع الأرقام حسب الملفات
-            </h2>
-            <div class="files-grid">
-                {files_summary if files_summary else f'<p>{t["no_files"]}</p>'}
-            </div>
+        <div id="newMessageAlert" class="new-message-alert">
+            <i class="fas fa-bell"></i> رسالة جديدة! جاري التحديث...
         </div>
         
-        <!-- جدول جميع الأرقام -->
         <div class="card" style="padding: 0; overflow: hidden;">
-            <div style="padding: 20px; border-bottom: 1px solid #e8e0f0;">
-                <h2 style="display: flex; align-items: center; gap: 10px; margin: 0;">
-                    <i class="fas fa-list"></i>
-                    جميع الأرقام ({numbers_count})
-                </h2>
+            <div style="padding: 20px; border-bottom: 1px solid #e8e0f0; display: flex; justify-content: space-between; align-items: center;">
+                <h2 style="margin: 0;"><i class="fas fa-list"></i> سجل الرسائل</h2>
+                <button class="btn btn-sm" onclick="location.reload()" style="padding: 8px 15px;">
+                    <i class="fas fa-redo-alt"></i> تحديث الصفحة
+                </button>
             </div>
-            
             <div class="table-wrapper" style="border: none; border-radius: 0;">
-                <table class="numbers-table">
+                <table class="sms-table">
                     <thead>
                         <tr>
                             <th><i class="fas fa-phone"></i> {t['phone']}</th>
-                            <th><i class="fas fa-folder"></i> {t['file']}</th>
+                            <th><i class="fas fa-key"></i> {t['code']} / الرسالة</th>
                             <th><i class="far fa-calendar"></i> {t['date']}</th>
                         </tr>
                     </thead>
-                    <tbody>
-                        {rows if rows else f'''
-                        <tr>
-                            <td colspan="3" style="text-align: center; padding: 50px;">
-                                <i class="fas fa-phone-slash" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>
-                                <p style="color: #8b6baf;">{t["no_numbers"]}</p>
-                            </td>
-                        </tr>
-                        '''}
+                    <tbody id="messagesTableBody">
+                        {rows}
                     </tbody>
                 </table>
             </div>
         </div>
-        
-        <!-- أزرار الإجراءات -->
-        <div class="action-buttons">
-            <a href="/user/add-number" class="btn btn-success">
-                <i class="fas fa-plus"></i> {t['add_number']}
-            </a>
-            <a href="/user/delete-number" class="btn btn-danger">
-                <i class="fas fa-trash"></i> {t['delete_number']}
-            </a>
-        </div>
     </div>
+    
+    <script>
+        const userId = {user_id};
+        let eventSource = null;
+        let messageCount = {len(codes)};
+        
+        // وظيفة المزامنة
+        async function syncMySMS() {{
+            const btn = document.getElementById('syncBtn');
+            const statusEl = document.getElementById('syncStatus');
+            const originalText = btn.innerHTML;
+            
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> جاري المزامنة...';
+            statusEl.innerHTML = '<span style="color: #fdb44b;"><i class="fas fa-spinner fa-spin"></i> جاري المزامنة...</span>';
+            
+            try {{
+                const r = await fetch('/api/sync');
+                const d = await r.json();
+                
+                if (d.success) {{
+                    if (d.new_messages > 0) {{
+                        statusEl.innerHTML = '<span style="color: #2cc185;"><i class="fas fa-check-circle"></i> تمت المزامنة! جاري التحديث...</span>';
+                        setTimeout(() => location.reload(), 1000);
+                    }} else {{
+                        statusEl.innerHTML = '<span style="color: #2cc185;"><i class="fas fa-check-circle"></i> لا توجد رسائل جديدة</span>';
+                        btn.disabled = false;
+                        btn.innerHTML = originalText;
+                        setTimeout(() => statusEl.innerHTML = '', 3000);
+                    }}
+                }} else {{
+                    statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> خطأ في المزامنة</span>';
+                    btn.disabled = false;
+                    btn.innerHTML = originalText;
+                }}
+            }} catch(e) {{
+                statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> خطأ في الاتصال</span>';
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+            }}
+        }}
+        
+        // الاتصال بـ SSE للتحديث الفوري
+        function connectSSE() {{
+            if (eventSource) {{
+                eventSource.close();
+            }}
+            
+            eventSource = new EventSource('/api/sse/connect/' + userId);
+            
+            eventSource.onopen = function() {{
+                console.log('✅ SSE Connected');
+                document.getElementById('connectionStatus').className = 'connection-status';
+                document.getElementById('connectionStatus').title = 'متصل - التحديث الفوري نشط';
+            }};
+            
+            eventSource.onerror = function() {{
+                console.log('❌ SSE Error');
+                document.getElementById('connectionStatus').className = 'connection-status disconnected';
+                document.getElementById('connectionStatus').title = 'انقطع الاتصال - جاري إعادة المحاولة...';
+                setTimeout(connectSSE, 5000);
+            }};
+            
+            eventSource.onmessage = function(event) {{
+                try {{
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'new_sms') {{
+                        // إظهار تنبيه
+                        const alert = document.getElementById('newMessageAlert');
+                        alert.style.display = 'block';
+                        setTimeout(() => alert.style.display = 'none', 3000);
+                        
+                        // إضافة الرسالة الجديدة إلى أعلى الجدول
+                        const smsData = data.data;
+                        const tbody = document.getElementById('messagesTableBody');
+                        
+                        const newRow = `
+                            <tr style="background: #f0e8fa;">
+                                <td style="direction: ltr; font-family: monospace; font-size: 1.1rem;">${{smsData.number || 'غير معروف'}}</td>
+                                <td><strong style="color: #9d4edd;">${{smsData.code || ''}}</strong></td>
+                                <td>${{smsData.received_at ? smsData.received_at.slice(0, 16) : ''}}</td>
+                            </tr>
+                        `;
+                        
+                        // إزالة صف "لا توجد رسائل" إذا كان موجوداً
+                        const firstRow = tbody.querySelector('tr');
+                        if (firstRow && firstRow.cells.length === 1) {{
+                            tbody.innerHTML = newRow;
+                        }} else {{
+                            tbody.insertAdjacentHTML('afterbegin', newRow);
+                        }}
+                        
+                        // تحديث العداد
+                        messageCount++;
+                        document.getElementById('messagesCount').textContent = messageCount;
+                        
+                        // إزالة تأثير الخلفية بعد 3 ثواني
+                        setTimeout(() => {{
+                            const rows = tbody.querySelectorAll('tr');
+                            if (rows.length > 0) {{
+                                rows[0].style.background = '';
+                                rows[0].style.transition = 'background 1s';
+                            }}
+                        }}, 3000);
+                    }}
+                }} catch(e) {{
+                    console.error('Error parsing SSE message:', e);
+                }}
+            }};
+        }}
+        
+        // بدء الاتصال
+        connectSSE();
+        
+        // تنظيف عند مغادرة الصفحة
+        window.addEventListener('beforeunload', function() {{
+            if (eventSource) {{
+                eventSource.close();
+            }}
+        }});
+        
+        // تحديث تلقائي كل 60 ثانية كاحتياط
+        setInterval(function() {{
+            fetch('/api/sync').then(r => r.json()).then(d => {{
+                if (d.success && d.new_messages > 0) {{
+                    location.reload();
+                }}
+            }});
+        }}, 60000);
+    </script>
 </body>
 </html>
 '''
-
+@app.route('/user/public-sms')
+@login_required
+def user_public_sms_page():
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = 'light'
+    
+    cursor = db_conn.cursor()
+    cursor.execute('''
+        SELECT text, date FROM messages 
+        WHERE is_deleted = 0 
+        ORDER BY message_id DESC 
+        LIMIT 100
+    ''')
+    messages = cursor.fetchall()
+    
+    cursor.execute("SELECT value FROM stats WHERE key = 'last_sync'")
+    last_sync = cursor.fetchone()
+    last_sync_time = last_sync[0] if last_sync else t['no_messages']
+    
+    # ============================================================
+    #         قاموس شامل لجميع دول العالم (العلم + الكود + الاسم)
+    # ============================================================
+    COUNTRIES_DB = {
+        # أفغانستان
+        'af': {'flag': '🇦🇫', 'code': '+93', 'name': 'Afghanistan', 'name_ar': 'أفغانستان'},
+        # ألبانيا
+        'al': {'flag': '🇦🇱', 'code': '+355', 'name': 'Albania', 'name_ar': 'ألبانيا'},
+        # الجزائر
+        'dz': {'flag': '🇩🇿', 'code': '+213', 'name': 'Algeria', 'name_ar': 'الجزائر'},
+        # أندورا
+        'ad': {'flag': '🇦🇩', 'code': '+376', 'name': 'Andorra', 'name_ar': 'أندورا'},
+        # أنغولا
+        'ao': {'flag': '🇦🇴', 'code': '+244', 'name': 'Angola', 'name_ar': 'أنغولا'},
+        # أنتيغوا وبربودا
+        'ag': {'flag': '🇦🇬', 'code': '+1268', 'name': 'Antigua and Barbuda', 'name_ar': 'أنتيغوا وبربودا'},
+        # الأرجنتين
+        'ar': {'flag': '🇦🇷', 'code': '+54', 'name': 'Argentina', 'name_ar': 'الأرجنتين'},
+        # أرمينيا
+        'am': {'flag': '🇦🇲', 'code': '+374', 'name': 'Armenia', 'name_ar': 'أرمينيا'},
+        # أستراليا
+        'au': {'flag': '🇦🇺', 'code': '+61', 'name': 'Australia', 'name_ar': 'أستراليا'},
+        # النمسا
+        'at': {'flag': '🇦🇹', 'code': '+43', 'name': 'Austria', 'name_ar': 'النمسا'},
+        # أذربيجان
+        'az': {'flag': '🇦🇿', 'code': '+994', 'name': 'Azerbaijan', 'name_ar': 'أذربيجان'},
+        # باهاماس
+        'bs': {'flag': '🇧🇸', 'code': '+1242', 'name': 'Bahamas', 'name_ar': 'باهاماس'},
+        # البحرين
+        'bh': {'flag': '🇧🇭', 'code': '+973', 'name': 'Bahrain', 'name_ar': 'البحرين'},
+        # بنغلاديش
+        'bd': {'flag': '🇧🇩', 'code': '+880', 'name': 'Bangladesh', 'name_ar': 'بنغلاديش'},
+        # باربادوس
+        'bb': {'flag': '🇧🇧', 'code': '+1246', 'name': 'Barbados', 'name_ar': 'باربادوس'},
+        # بيلاروسيا
+        'by': {'flag': '🇧🇾', 'code': '+375', 'name': 'Belarus', 'name_ar': 'بيلاروسيا'},
+        # بلجيكا
+        'be': {'flag': '🇧🇪', 'code': '+32', 'name': 'Belgium', 'name_ar': 'بلجيكا'},
+        # بليز
+        'bz': {'flag': '🇧🇿', 'code': '+501', 'name': 'Belize', 'name_ar': 'بليز'},
+        # بنين
+        'bj': {'flag': '🇧🇯', 'code': '+229', 'name': 'Benin', 'name_ar': 'بنين'},
+        # بوتان
+        'bt': {'flag': '🇧🇹', 'code': '+975', 'name': 'Bhutan', 'name_ar': 'بوتان'},
+        # بوليفيا
+        'bo': {'flag': '🇧🇴', 'code': '+591', 'name': 'Bolivia', 'name_ar': 'بوليفيا'},
+        # البوسنة والهرسك
+        'ba': {'flag': '🇧🇦', 'code': '+387', 'name': 'Bosnia and Herzegovina', 'name_ar': 'البوسنة والهرسك'},
+        # بوتسوانا
+        'bw': {'flag': '🇧🇼', 'code': '+267', 'name': 'Botswana', 'name_ar': 'بوتسوانا'},
+        # البرازيل
+        'br': {'flag': '🇧🇷', 'code': '+55', 'name': 'Brazil', 'name_ar': 'البرازيل'},
+        # بروناي
+        'bn': {'flag': '🇧🇳', 'code': '+673', 'name': 'Brunei', 'name_ar': 'بروناي'},
+        # بلغاريا
+        'bg': {'flag': '🇧🇬', 'code': '+359', 'name': 'Bulgaria', 'name_ar': 'بلغاريا'},
+        # بوركينا فاسو
+        'bf': {'flag': '🇧🇫', 'code': '+226', 'name': 'Burkina Faso', 'name_ar': 'بوركينا فاسو'},
+        # بوروندي
+        'bi': {'flag': '🇧🇮', 'code': '+257', 'name': 'Burundi', 'name_ar': 'بوروندي'},
+        # الرأس الأخضر
+        'cv': {'flag': '🇨🇻', 'code': '+238', 'name': 'Cabo Verde', 'name_ar': 'الرأس الأخضر'},
+        # كمبوديا
+        'kh': {'flag': '🇰🇭', 'code': '+855', 'name': 'Cambodia', 'name_ar': 'كمبوديا'},
+        # الكاميرون
+        'cm': {'flag': '🇨🇲', 'code': '+237', 'name': 'Cameroon', 'name_ar': 'الكاميرون'},
+        # كندا
+        'ca': {'flag': '🇨🇦', 'code': '+1', 'name': 'Canada', 'name_ar': 'كندا'},
+        # جمهورية أفريقيا الوسطى
+        'cf': {'flag': '🇨🇫', 'code': '+236', 'name': 'Central African Republic', 'name_ar': 'جمهورية أفريقيا الوسطى'},
+        # تشاد
+        'td': {'flag': '🇹🇩', 'code': '+235', 'name': 'Chad', 'name_ar': 'تشاد'},
+        # تشيلي
+        'cl': {'flag': '🇨🇱', 'code': '+56', 'name': 'Chile', 'name_ar': 'تشيلي'},
+        # الصين
+        'cn': {'flag': '🇨🇳', 'code': '+86', 'name': 'China', 'name_ar': 'الصين'},
+        # كولومبيا
+        'co': {'flag': '🇨🇴', 'code': '+57', 'name': 'Colombia', 'name_ar': 'كولومبيا'},
+        # جزر القمر
+        'km': {'flag': '🇰🇲', 'code': '+269', 'name': 'Comoros', 'name_ar': 'جزر القمر'},
+        # الكونغو
+        'cg': {'flag': '🇨🇬', 'code': '+242', 'name': 'Congo', 'name_ar': 'الكونغو'},
+        # كوستاريكا
+        'cr': {'flag': '🇨🇷', 'code': '+506', 'name': 'Costa Rica', 'name_ar': 'كوستاريكا'},
+        # كرواتيا
+        'hr': {'flag': '🇭🇷', 'code': '+385', 'name': 'Croatia', 'name_ar': 'كرواتيا'},
+        # كوبا
+        'cu': {'flag': '🇨🇺', 'code': '+53', 'name': 'Cuba', 'name_ar': 'كوبا'},
+        # قبرص
+        'cy': {'flag': '🇨🇾', 'code': '+357', 'name': 'Cyprus', 'name_ar': 'قبرص'},
+        # التشيك
+        'cz': {'flag': '🇨🇿', 'code': '+420', 'name': 'Czech Republic', 'name_ar': 'التشيك'},
+        # الدنمارك
+        'dk': {'flag': '🇩🇰', 'code': '+45', 'name': 'Denmark', 'name_ar': 'الدنمارك'},
+        # جيبوتي
+        'dj': {'flag': '🇩🇯', 'code': '+253', 'name': 'Djibouti', 'name_ar': 'جيبوتي'},
+        # دومينيكا
+        'dm': {'flag': '🇩🇲', 'code': '+1767', 'name': 'Dominica', 'name_ar': 'دومينيكا'},
+        # جمهورية الدومينيكان
+        'do': {'flag': '🇩🇴', 'code': '+1809', 'name': 'Dominican Republic', 'name_ar': 'جمهورية الدومينيكان'},
+        # الإكوادور
+        'ec': {'flag': '🇪🇨', 'code': '+593', 'name': 'Ecuador', 'name_ar': 'الإكوادور'},
+        # مصر
+        'eg': {'flag': '🇪🇬', 'code': '+20', 'name': 'Egypt', 'name_ar': 'مصر'},
+        # السلفادور
+        'sv': {'flag': '🇸🇻', 'code': '+503', 'name': 'El Salvador', 'name_ar': 'السلفادور'},
+        # غينيا الاستوائية
+        'gq': {'flag': '🇬🇶', 'code': '+240', 'name': 'Equatorial Guinea', 'name_ar': 'غينيا الاستوائية'},
+        # إريتريا
+        'er': {'flag': '🇪🇷', 'code': '+291', 'name': 'Eritrea', 'name_ar': 'إريتريا'},
+        # إستونيا
+        'ee': {'flag': '🇪🇪', 'code': '+372', 'name': 'Estonia', 'name_ar': 'إستونيا'},
+        # إسواتيني
+        'sz': {'flag': '🇸🇿', 'code': '+268', 'name': 'Eswatini', 'name_ar': 'إسواتيني'},
+        # إثيوبيا
+        'et': {'flag': '🇪🇹', 'code': '+251', 'name': 'Ethiopia', 'name_ar': 'إثيوبيا'},
+        # فيجي
+        'fj': {'flag': '🇫🇯', 'code': '+679', 'name': 'Fiji', 'name_ar': 'فيجي'},
+        # فنلندا
+        'fi': {'flag': '🇫🇮', 'code': '+358', 'name': 'Finland', 'name_ar': 'فنلندا'},
+        # فرنسا
+        'fr': {'flag': '🇫🇷', 'code': '+33', 'name': 'France', 'name_ar': 'فرنسا'},
+        # الغابون
+        'ga': {'flag': '🇬🇦', 'code': '+241', 'name': 'Gabon', 'name_ar': 'الغابون'},
+        # غامبيا
+        'gm': {'flag': '🇬🇲', 'code': '+220', 'name': 'Gambia', 'name_ar': 'غامبيا'},
+        # جورجيا
+        'ge': {'flag': '🇬🇪', 'code': '+995', 'name': 'Georgia', 'name_ar': 'جورجيا'},
+        # ألمانيا
+        'de': {'flag': '🇩🇪', 'code': '+49', 'name': 'Germany', 'name_ar': 'ألمانيا'},
+        # غانا
+        'gh': {'flag': '🇬🇭', 'code': '+233', 'name': 'Ghana', 'name_ar': 'غانا'},
+        # اليونان
+        'gr': {'flag': '🇬🇷', 'code': '+30', 'name': 'Greece', 'name_ar': 'اليونان'},
+        # غرينادا
+        'gd': {'flag': '🇬🇩', 'code': '+1473', 'name': 'Grenada', 'name_ar': 'غرينادا'},
+        # غواتيمالا
+        'gt': {'flag': '🇬🇹', 'code': '+502', 'name': 'Guatemala', 'name_ar': 'غواتيمالا'},
+        # غينيا
+        'gn': {'flag': '🇬🇳', 'code': '+224', 'name': 'Guinea', 'name_ar': 'غينيا'},
+        # غينيا بيساو
+        'gw': {'flag': '🇬🇼', 'code': '+245', 'name': 'Guinea-Bissau', 'name_ar': 'غينيا بيساو'},
+        # غيانا
+        'gy': {'flag': '🇬🇾', 'code': '+592', 'name': 'Guyana', 'name_ar': 'غيانا'},
+        # هايتي
+        'ht': {'flag': '🇭🇹', 'code': '+509', 'name': 'Haiti', 'name_ar': 'هايتي'},
+        # هندوراس
+        'hn': {'flag': '🇭🇳', 'code': '+504', 'name': 'Honduras', 'name_ar': 'هندوراس'},
+        # المجر
+        'hu': {'flag': '🇭🇺', 'code': '+36', 'name': 'Hungary', 'name_ar': 'المجر'},
+        # آيسلندا
+        'is': {'flag': '🇮🇸', 'code': '+354', 'name': 'Iceland', 'name_ar': 'آيسلندا'},
+        # الهند
+        'in': {'flag': '🇮🇳', 'code': '+91', 'name': 'India', 'name_ar': 'الهند'},
+        # إندونيسيا
+        'id': {'flag': '🇮🇩', 'code': '+62', 'name': 'Indonesia', 'name_ar': 'إندونيسيا'},
+        # إيران
+        'ir': {'flag': '🇮🇷', 'code': '+98', 'name': 'Iran', 'name_ar': 'إيران'},
+        # العراق
+        'iq': {'flag': '🇮🇶', 'code': '+964', 'name': 'Iraq', 'name_ar': 'العراق'},
+        # أيرلندا
+        'ie': {'flag': '🇮🇪', 'code': '+353', 'name': 'Ireland', 'name_ar': 'أيرلندا'},
+        # إسرائيل
+        'il': {'flag': '🇮🇱', 'code': '+972', 'name': 'Israel', 'name_ar': 'إسرائيل'},
+        # إيطاليا
+        'it': {'flag': '🇮🇹', 'code': '+39', 'name': 'Italy', 'name_ar': 'إيطاليا'},
+        # ساحل العاج
+        'ci': {'flag': '🇨🇮', 'code': '+225', 'name': 'Ivory Coast', 'name_ar': 'ساحل العاج'},
+        # جامايكا
+        'jm': {'flag': '🇯🇲', 'code': '+1876', 'name': 'Jamaica', 'name_ar': 'جامايكا'},
+        # اليابان
+        'jp': {'flag': '🇯🇵', 'code': '+81', 'name': 'Japan', 'name_ar': 'اليابان'},
+        # الأردن
+        'jo': {'flag': '🇯🇴', 'code': '+962', 'name': 'Jordan', 'name_ar': 'الأردن'},
+        # كازاخستان
+        'kz': {'flag': '🇰🇿', 'code': '+7', 'name': 'Kazakhstan', 'name_ar': 'كازاخستان'},
+        # كينيا
+        'ke': {'flag': '🇰🇪', 'code': '+254', 'name': 'Kenya', 'name_ar': 'كينيا'},
+        # كيريباتي
+        'ki': {'flag': '🇰🇮', 'code': '+686', 'name': 'Kiribati', 'name_ar': 'كيريباتي'},
+        # كوريا الشمالية
+        'kp': {'flag': '🇰🇵', 'code': '+850', 'name': 'North Korea', 'name_ar': 'كوريا الشمالية'},
+        # كوريا الجنوبية
+        'kr': {'flag': '🇰🇷', 'code': '+82', 'name': 'South Korea', 'name_ar': 'كوريا الجنوبية'},
+        # الكويت
+        'kw': {'flag': '🇰🇼', 'code': '+965', 'name': 'Kuwait', 'name_ar': 'الكويت'},
+        # قيرغيزستان
+        'kg': {'flag': '🇰🇬', 'code': '+996', 'name': 'Kyrgyzstan', 'name_ar': 'قيرغيزستان'},
+        # لاوس
+        'la': {'flag': '🇱🇦', 'code': '+856', 'name': 'Laos', 'name_ar': 'لاوس'},
+        # لاتفيا
+        'lv': {'flag': '🇱🇻', 'code': '+371', 'name': 'Latvia', 'name_ar': 'لاتفيا'},
+        # لبنان
+        'lb': {'flag': '🇱🇧', 'code': '+961', 'name': 'Lebanon', 'name_ar': 'لبنان'},
+        # ليسوتو
+        'ls': {'flag': '🇱🇸', 'code': '+266', 'name': 'Lesotho', 'name_ar': 'ليسوتو'},
+        # ليبيريا
+        'lr': {'flag': '🇱🇷', 'code': '+231', 'name': 'Liberia', 'name_ar': 'ليبيريا'},
+        # ليبيا
+        'ly': {'flag': '🇱🇾', 'code': '+218', 'name': 'Libya', 'name_ar': 'ليبيا'},
+        # ليختنشتاين
+        'li': {'flag': '🇱🇮', 'code': '+423', 'name': 'Liechtenstein', 'name_ar': 'ليختنشتاين'},
+        # ليتوانيا
+        'lt': {'flag': '🇱🇹', 'code': '+370', 'name': 'Lithuania', 'name_ar': 'ليتوانيا'},
+        # لوكسمبورغ
+        'lu': {'flag': '🇱🇺', 'code': '+352', 'name': 'Luxembourg', 'name_ar': 'لوكسمبورغ'},
+        # مدغشقر
+        'mg': {'flag': '🇲🇬', 'code': '+261', 'name': 'Madagascar', 'name_ar': 'مدغشقر'},
+        # مالاوي
+        'mw': {'flag': '🇲🇼', 'code': '+265', 'name': 'Malawi', 'name_ar': 'مالاوي'},
+        # ماليزيا
+        'my': {'flag': '🇲🇾', 'code': '+60', 'name': 'Malaysia', 'name_ar': 'ماليزيا'},
+        # المالديف
+        'mv': {'flag': '🇲🇻', 'code': '+960', 'name': 'Maldives', 'name_ar': 'المالديف'},
+        # مالي
+        'ml': {'flag': '🇲🇱', 'code': '+223', 'name': 'Mali', 'name_ar': 'مالي'},
+        # مالطا
+        'mt': {'flag': '🇲🇹', 'code': '+356', 'name': 'Malta', 'name_ar': 'مالطا'},
+        # جزر مارشال
+        'mh': {'flag': '🇲🇭', 'code': '+692', 'name': 'Marshall Islands', 'name_ar': 'جزر مارشال'},
+        # موريتانيا
+        'mr': {'flag': '🇲🇷', 'code': '+222', 'name': 'Mauritania', 'name_ar': 'موريتانيا'},
+        # موريشيوس
+        'mu': {'flag': '🇲🇺', 'code': '+230', 'name': 'Mauritius', 'name_ar': 'موريشيوس'},
+        # المكسيك
+        'mx': {'flag': '🇲🇽', 'code': '+52', 'name': 'Mexico', 'name_ar': 'المكسيك'},
+        # ميكرونيسيا
+        'fm': {'flag': '🇫🇲', 'code': '+691', 'name': 'Micronesia', 'name_ar': 'ميكرونيسيا'},
+        # مولدوفا
+        'md': {'flag': '🇲🇩', 'code': '+373', 'name': 'Moldova', 'name_ar': 'مولدوفا'},
+        # موناكو
+        'mc': {'flag': '🇲🇨', 'code': '+377', 'name': 'Monaco', 'name_ar': 'موناكو'},
+        # منغوليا
+        'mn': {'flag': '🇲🇳', 'code': '+976', 'name': 'Mongolia', 'name_ar': 'منغوليا'},
+        # الجبل الأسود
+        'me': {'flag': '🇲🇪', 'code': '+382', 'name': 'Montenegro', 'name_ar': 'الجبل الأسود'},
+        # المغرب
+        'ma': {'flag': '🇲🇦', 'code': '+212', 'name': 'Morocco', 'name_ar': 'المغرب'},
+        # موزمبيق
+        'mz': {'flag': '🇲🇿', 'code': '+258', 'name': 'Mozambique', 'name_ar': 'موزمبيق'},
+        # ميانمار
+        'mm': {'flag': '🇲🇲', 'code': '+95', 'name': 'Myanmar', 'name_ar': 'ميانمار'},
+        # ناميبيا
+        'na': {'flag': '🇳🇦', 'code': '+264', 'name': 'Namibia', 'name_ar': 'ناميبيا'},
+        # ناورو
+        'nr': {'flag': '🇳🇷', 'code': '+674', 'name': 'Nauru', 'name_ar': 'ناورو'},
+        # نيبال
+        'np': {'flag': '🇳🇵', 'code': '+977', 'name': 'Nepal', 'name_ar': 'نيبال'},
+        # هولندا
+        'nl': {'flag': '🇳🇱', 'code': '+31', 'name': 'Netherlands', 'name_ar': 'هولندا'},
+        # نيوزيلندا
+        'nz': {'flag': '🇳🇿', 'code': '+64', 'name': 'New Zealand', 'name_ar': 'نيوزيلندا'},
+        # نيكاراغوا
+        'ni': {'flag': '🇳🇮', 'code': '+505', 'name': 'Nicaragua', 'name_ar': 'نيكاراغوا'},
+        # النيجر
+        'ne': {'flag': '🇳🇪', 'code': '+227', 'name': 'Niger', 'name_ar': 'النيجر'},
+        # نيجيريا
+        'ng': {'flag': '🇳🇬', 'code': '+234', 'name': 'Nigeria', 'name_ar': 'نيجيريا'},
+        # مقدونيا الشمالية
+        'mk': {'flag': '🇲🇰', 'code': '+389', 'name': 'North Macedonia', 'name_ar': 'مقدونيا الشمالية'},
+        # النرويج
+        'no': {'flag': '🇳🇴', 'code': '+47', 'name': 'Norway', 'name_ar': 'النرويج'},
+        # عمان
+        'om': {'flag': '🇴🇲', 'code': '+968', 'name': 'Oman', 'name_ar': 'عمان'},
+        # باكستان
+        'pk': {'flag': '🇵🇰', 'code': '+92', 'name': 'Pakistan', 'name_ar': 'باكستان'},
+        # بالاو
+        'pw': {'flag': '🇵🇼', 'code': '+680', 'name': 'Palau', 'name_ar': 'بالاو'},
+        # فلسطين
+        'ps': {'flag': '🇵🇸', 'code': '+970', 'name': 'Palestine', 'name_ar': 'فلسطين'},
+        # بنما
+        'pa': {'flag': '🇵🇦', 'code': '+507', 'name': 'Panama', 'name_ar': 'بنما'},
+        # بابوا غينيا الجديدة
+        'pg': {'flag': '🇵🇬', 'code': '+675', 'name': 'Papua New Guinea', 'name_ar': 'بابوا غينيا الجديدة'},
+        # باراغواي
+        'py': {'flag': '🇵🇾', 'code': '+595', 'name': 'Paraguay', 'name_ar': 'باراغواي'},
+        # بيرو
+        'pe': {'flag': '🇵🇪', 'code': '+51', 'name': 'Peru', 'name_ar': 'بيرو'},
+        # الفلبين
+        'ph': {'flag': '🇵🇭', 'code': '+63', 'name': 'Philippines', 'name_ar': 'الفلبين'},
+        # بولندا
+        'pl': {'flag': '🇵🇱', 'code': '+48', 'name': 'Poland', 'name_ar': 'بولندا'},
+        # البرتغال
+        'pt': {'flag': '🇵🇹', 'code': '+351', 'name': 'Portugal', 'name_ar': 'البرتغال'},
+        # قطر
+        'qa': {'flag': '🇶🇦', 'code': '+974', 'name': 'Qatar', 'name_ar': 'قطر'},
+        # رومانيا
+        'ro': {'flag': '🇷🇴', 'code': '+40', 'name': 'Romania', 'name_ar': 'رومانيا'},
+        # روسيا
+        'ru': {'flag': '🇷🇺', 'code': '+7', 'name': 'Russia', 'name_ar': 'روسيا'},
+        # رواندا
+        'rw': {'flag': '🇷🇼', 'code': '+250', 'name': 'Rwanda', 'name_ar': 'رواندا'},
+        # سانت كيتس ونيفيس
+        'kn': {'flag': '🇰🇳', 'code': '+1869', 'name': 'Saint Kitts and Nevis', 'name_ar': 'سانت كيتس ونيفيس'},
+        # سانت لوسيا
+        'lc': {'flag': '🇱🇨', 'code': '+1758', 'name': 'Saint Lucia', 'name_ar': 'سانت لوسيا'},
+        # سانت فنسنت والغرينادين
+        'vc': {'flag': '🇻🇨', 'code': '+1784', 'name': 'Saint Vincent and the Grenadines', 'name_ar': 'سانت فنسنت والغرينادين'},
+        # ساموا
+        'ws': {'flag': '🇼🇸', 'code': '+685', 'name': 'Samoa', 'name_ar': 'ساموا'},
+        # سان مارينو
+        'sm': {'flag': '🇸🇲', 'code': '+378', 'name': 'San Marino', 'name_ar': 'سان مارينو'},
+        # ساو تومي وبرينسيب
+        'st': {'flag': '🇸🇹', 'code': '+239', 'name': 'Sao Tome and Principe', 'name_ar': 'ساو تومي وبرينسيب'},
+        # السعودية
+        'sa': {'flag': '🇸🇦', 'code': '+966', 'name': 'Saudi Arabia', 'name_ar': 'السعودية'},
+        # السنغال
+        'sn': {'flag': '🇸🇳', 'code': '+221', 'name': 'Senegal', 'name_ar': 'السنغال'},
+        # صربيا
+        'rs': {'flag': '🇷🇸', 'code': '+381', 'name': 'Serbia', 'name_ar': 'صربيا'},
+        # سيشل
+        'sc': {'flag': '🇸🇨', 'code': '+248', 'name': 'Seychelles', 'name_ar': 'سيشل'},
+        # سيراليون
+        'sl': {'flag': '🇸🇱', 'code': '+232', 'name': 'Sierra Leone', 'name_ar': 'سيراليون'},
+        # سنغافورة
+        'sg': {'flag': '🇸🇬', 'code': '+65', 'name': 'Singapore', 'name_ar': 'سنغافورة'},
+        # سلوفاكيا
+        'sk': {'flag': '🇸🇰', 'code': '+421', 'name': 'Slovakia', 'name_ar': 'سلوفاكيا'},
+        # سلوفينيا
+        'si': {'flag': '🇸🇮', 'code': '+386', 'name': 'Slovenia', 'name_ar': 'سلوفينيا'},
+        # جزر سليمان
+        'sb': {'flag': '🇸🇧', 'code': '+677', 'name': 'Solomon Islands', 'name_ar': 'جزر سليمان'},
+        # الصومال
+        'so': {'flag': '🇸🇴', 'code': '+252', 'name': 'Somalia', 'name_ar': 'الصومال'},
+        # جنوب أفريقيا
+        'za': {'flag': '🇿🇦', 'code': '+27', 'name': 'South Africa', 'name_ar': 'جنوب أفريقيا'},
+        # جنوب السودان
+        'ss': {'flag': '🇸🇸', 'code': '+211', 'name': 'South Sudan', 'name_ar': 'جنوب السودان'},
+        # إسبانيا
+        'es': {'flag': '🇪🇸', 'code': '+34', 'name': 'Spain', 'name_ar': 'إسبانيا'},
+        # سريلانكا
+        'lk': {'flag': '🇱🇰', 'code': '+94', 'name': 'Sri Lanka', 'name_ar': 'سريلانكا'},
+        # السودان
+        'sd': {'flag': '🇸🇩', 'code': '+249', 'name': 'Sudan', 'name_ar': 'السودان'},
+        # سورينام
+        'sr': {'flag': '🇸🇷', 'code': '+597', 'name': 'Suriname', 'name_ar': 'سورينام'},
+        # السويد
+        'se': {'flag': '🇸🇪', 'code': '+46', 'name': 'Sweden', 'name_ar': 'السويد'},
+        # سويسرا
+        'ch': {'flag': '🇨🇭', 'code': '+41', 'name': 'Switzerland', 'name_ar': 'سويسرا'},
+        # سوريا
+        'sy': {'flag': '🇸🇾', 'code': '+963', 'name': 'Syria', 'name_ar': 'سوريا'},
+        # تايوان
+        'tw': {'flag': '🇹🇼', 'code': '+886', 'name': 'Taiwan', 'name_ar': 'تايوان'},
+        # طاجيكستان
+        'tj': {'flag': '🇹🇯', 'code': '+992', 'name': 'Tajikistan', 'name_ar': 'طاجيكستان'},
+        # تنزانيا
+        'tz': {'flag': '🇹🇿', 'code': '+255', 'name': 'Tanzania', 'name_ar': 'تنزانيا'},
+        # تايلاند
+        'th': {'flag': '🇹🇭', 'code': '+66', 'name': 'Thailand', 'name_ar': 'تايلاند'},
+        # تيمور الشرقية
+        'tl': {'flag': '🇹🇱', 'code': '+670', 'name': 'Timor-Leste', 'name_ar': 'تيمور الشرقية'},
+        # توغو
+        'tg': {'flag': '🇹🇬', 'code': '+228', 'name': 'Togo', 'name_ar': 'توغو'},
+        # تونغا
+        'to': {'flag': '🇹🇴', 'code': '+676', 'name': 'Tonga', 'name_ar': 'تونغا'},
+        # ترينيداد وتوباغو
+        'tt': {'flag': '🇹🇹', 'code': '+1868', 'name': 'Trinidad and Tobago', 'name_ar': 'ترينيداد وتوباغو'},
+        # تونس
+        'tn': {'flag': '🇹🇳', 'code': '+216', 'name': 'Tunisia', 'name_ar': 'تونس'},
+        # تركيا
+        'tr': {'flag': '🇹🇷', 'code': '+90', 'name': 'Turkey', 'name_ar': 'تركيا'},
+        # تركمانستان
+        'tm': {'flag': '🇹🇲', 'code': '+993', 'name': 'Turkmenistan', 'name_ar': 'تركمانستان'},
+        # توفالو
+        'tv': {'flag': '🇹🇻', 'code': '+688', 'name': 'Tuvalu', 'name_ar': 'توفالو'},
+        # أوغندا
+        'ug': {'flag': '🇺🇬', 'code': '+256', 'name': 'Uganda', 'name_ar': 'أوغندا'},
+        # أوكرانيا
+        'ua': {'flag': '🇺🇦', 'code': '+380', 'name': 'Ukraine', 'name_ar': 'أوكرانيا'},
+        # الإمارات العربية المتحدة
+        'ae': {'flag': '🇦🇪', 'code': '+971', 'name': 'UAE', 'name_ar': 'الإمارات'},
+        # المملكة المتحدة
+        'gb': {'flag': '🇬🇧', 'code': '+44', 'name': 'United Kingdom', 'name_ar': 'المملكة المتحدة'},
+        # الولايات المتحدة
+        'us': {'flag': '🇺🇸', 'code': '+1', 'name': 'United States', 'name_ar': 'الولايات المتحدة'},
+        # أوروغواي
+        'uy': {'flag': '🇺🇾', 'code': '+598', 'name': 'Uruguay', 'name_ar': 'أوروغواي'},
+        # أوزبكستان
+        'uz': {'flag': '🇺🇿', 'code': '+998', 'name': 'Uzbekistan', 'name_ar': 'أوزبكستان'},
+        # فانواتو
+        'vu': {'flag': '🇻🇺', 'code': '+678', 'name': 'Vanuatu', 'name_ar': 'فانواتو'},
+        # الفاتيكان
+        'va': {'flag': '🇻🇦', 'code': '+379', 'name': 'Vatican City', 'name_ar': 'الفاتيكان'},
+        # فنزويلا
+        've': {'flag': '🇻🇪', 'code': '+58', 'name': 'Venezuela', 'name_ar': 'فنزويلا'},
+        # فيتنام
+        'vn': {'flag': '🇻🇳', 'code': '+84', 'name': 'Vietnam', 'name_ar': 'فيتنام'},
+        # اليمن
+        'ye': {'flag': '🇾🇪', 'code': '+967', 'name': 'Yemen', 'name_ar': 'اليمن'},
+        # زامبيا
+        'zm': {'flag': '🇿🇲', 'code': '+260', 'name': 'Zambia', 'name_ar': 'زامبيا'},
+        # زيمبابوي
+        'zw': {'flag': '🇿🇼', 'code': '+263', 'name': 'Zimbabwe', 'name_ar': 'زيمبابوي'},
+        # كوسوفو
+        'xk': {'flag': '🇽🇰', 'code': '+383', 'name': 'Kosovo', 'name_ar': 'كوسوفو'},
+        # الصحراء الغربية
+        'eh': {'flag': '🇪🇭', 'code': '+212', 'name': 'Western Sahara', 'name_ar': 'الصحراء الغربية'},
+        # أرض الصومال
+        'somaliland': {'flag': '🇸🇴', 'code': '+252', 'name': 'Somaliland', 'name_ar': 'أرض الصومال'},
+        # هونغ كونغ
+        'hk': {'flag': '🇭🇰', 'code': '+852', 'name': 'Hong Kong', 'name_ar': 'هونغ كونغ'},
+        # ماكاو
+        'mo': {'flag': '🇲🇴', 'code': '+853', 'name': 'Macau', 'name_ar': 'ماكاو'},
+        # بورتوريكو
+        'pr': {'flag': '🇵🇷', 'code': '+1787', 'name': 'Puerto Rico', 'name_ar': 'بورتوريكو'},
+        # غوام
+        'gu': {'flag': '🇬🇺', 'code': '+1671', 'name': 'Guam', 'name_ar': 'غوام'},
+        # برمودا
+        'bm': {'flag': '🇧🇲', 'code': '+1441', 'name': 'Bermuda', 'name_ar': 'برمودا'},
+        # جزر كايمان
+        'ky': {'flag': '🇰🇾', 'code': '+1345', 'name': 'Cayman Islands', 'name_ar': 'جزر كايمان'},
+        # جزر فيرجن البريطانية
+        'vg': {'flag': '🇻🇬', 'code': '+1284', 'name': 'British Virgin Islands', 'name_ar': 'جزر فيرجن البريطانية'},
+        # جزر فيرجن الأمريكية
+        'vi': {'flag': '🇻🇮', 'code': '+1340', 'name': 'US Virgin Islands', 'name_ar': 'جزر فيرجن الأمريكية'},
+        # جبل طارق
+        'gi': {'flag': '🇬🇮', 'code': '+350', 'name': 'Gibraltar', 'name_ar': 'جبل طارق'},
+        # جزر فارو
+        'fo': {'flag': '🇫🇴', 'code': '+298', 'name': 'Faroe Islands', 'name_ar': 'جزر فارو'},
+        # جرينلاند
+        'gl': {'flag': '🇬🇱', 'code': '+299', 'name': 'Greenland', 'name_ar': 'جرينلاند'},
+        # أروبا
+        'aw': {'flag': '🇦🇼', 'code': '+297', 'name': 'Aruba', 'name_ar': 'أروبا'},
+        # كوراساو
+        'cw': {'flag': '🇨🇼', 'code': '+599', 'name': 'Curacao', 'name_ar': 'كوراساو'},
+        # سانت مارتن
+        'sx': {'flag': '🇸🇽', 'code': '+1721', 'name': 'Sint Maarten', 'name_ar': 'سانت مارتن'},
+        # بونير
+        'bq': {'flag': '🇧🇶', 'code': '+599', 'name': 'Bonaire', 'name_ar': 'بونير'},
+        # أنغويلا
+        'ai': {'flag': '🇦🇮', 'code': '+1264', 'name': 'Anguilla', 'name_ar': 'أنغويلا'},
+        # مونتسيرات
+        'ms': {'flag': '🇲🇸', 'code': '+1664', 'name': 'Montserrat', 'name_ar': 'مونتسيرات'},
+        # جزر توركس وكايكوس
+        'tc': {'flag': '🇹🇨', 'code': '+1649', 'name': 'Turks and Caicos', 'name_ar': 'جزر توركس وكايكوس'},
+        # سانت بيير وميكلون
+        'pm': {'flag': '🇵🇲', 'code': '+508', 'name': 'Saint Pierre and Miquelon', 'name_ar': 'سانت بيير وميكلون'},
+        # جزر فوكلاند
+        'fk': {'flag': '🇫🇰', 'code': '+500', 'name': 'Falkland Islands', 'name_ar': 'جزر فوكلاند'},
+        # بولينيزيا الفرنسية
+        'pf': {'flag': '🇵🇫', 'code': '+689', 'name': 'French Polynesia', 'name_ar': 'بولينيزيا الفرنسية'},
+        # كاليدونيا الجديدة
+        'nc': {'flag': '🇳🇨', 'code': '+687', 'name': 'New Caledonia', 'name_ar': 'كاليدونيا الجديدة'},
+        # واليس وفوتونا
+        'wf': {'flag': '🇼🇫', 'code': '+681', 'name': 'Wallis and Futuna', 'name_ar': 'واليس وفوتونا'},
+        # جزر كوك
+        'ck': {'flag': '🇨🇰', 'code': '+682', 'name': 'Cook Islands', 'name_ar': 'جزر كوك'},
+        # نييوي
+        'nu': {'flag': '🇳🇺', 'code': '+683', 'name': 'Niue', 'name_ar': 'نييوي'},
+        # توكيلاو
+        'tk': {'flag': '🇹🇰', 'code': '+690', 'name': 'Tokelau', 'name_ar': 'توكيلاو'},
+        # جزيرة نورفولك
+        'nf': {'flag': '🇳🇫', 'code': '+672', 'name': 'Norfolk Island', 'name_ar': 'جزيرة نورفولك'},
+        # جزيرة كريسماس
+        'cx': {'flag': '🇨🇽', 'code': '+61', 'name': 'Christmas Island', 'name_ar': 'جزيرة كريسماس'},
+        # جزر كوكوس
+        'cc': {'flag': '🇨🇨', 'code': '+61', 'name': 'Cocos Islands', 'name_ar': 'جزر كوكوس'},
+    }
+    
+    def extract_country_info(text):
+        import re
+        text_lower = text.lower()
+        
+        hashtag_match = re.search(r'#([A-Za-z]{2,3})\b', text)
+        if hashtag_match:
+            try:
+                code = hashtag_match.group(1).lower()
+                if code in COUNTRIES_DB:
+                    return COUNTRIES_DB[code]['flag'], COUNTRIES_DB[code]['code'], COUNTRIES_DB[code]['name']
+            except:
+                pass
+        
+        for key, data in COUNTRIES_DB.items():
+            if data['name'].lower() in text_lower or data['name_ar'] in text:
+                return data['flag'], data['code'], data['name']
+        
+        code_match = re.search(r'\+(\d{1,3})\b', text)
+        if code_match:
+            try:
+                dial_code = '+' + code_match.group(1)
+                for key, data in COUNTRIES_DB.items():
+                    if data['code'] == dial_code:
+                        return data['flag'], data['code'], data['name']
+            except:
+                pass
+        
+        for key, data in COUNTRIES_DB.items():
+            if data['flag'] in text:
+                return data['flag'], data['code'], data['name']
+        
+        return '🌍', '', 'Unknown'
+    
+    def extract_phone_number(text):
+        import re
+        
+        if not text:
+            return '—'
+        
+        patterns = [
+            r'([A-Za-z]?\d{8,15})',
+            r'(\+\d{1,3}[\s.-]?\d{8,15})',
+            r'(\d{2,3}[•*]{2,}\d{3,5})',
+            r'\b(\d{8,15})\b',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                try:
+                    number = match.group(1) if match.lastindex and match.lastindex >= 1 else match.group(0)
+                except:
+                    number = match.group(0)
+                
+                if '•' in number or '*' in number:
+                    return number
+                
+                number = re.sub(r'[\s.\-]', '', number)
+                number = re.sub(r'^[A-Za-z]+', '', number)
+                
+                if len(number) < 8:
+                    continue
+                
+                if len(number) > 8:
+                    return number[:4] + '••••' + number[-4:]
+                elif len(number) > 4:
+                    return number[:2] + '••' + number[-2:]
+                else:
+                    return '••••'
+        
+        return '—'
+    
+    def extract_cli_info(text):
+        text_lower = text.lower()
+        cli_map = {
+            'whatsapp': '📱 WhatsApp', 'واتساب': '📱 WhatsApp', 'واتس': '📱 WhatsApp',
+            'telegram': '✈️ Telegram', 'تيليجرام': '✈️ Telegram',
+            'viber': '📞 Viber', 'فايبر': '📞 Viber',
+            'signal': '🔒 Signal',
+            'tinder': '🔥 Tinder',
+            'tiktok': '🎵 TikTok',
+            'google': '𝐆 Google',
+            'facebook': '𝐟 Facebook',
+            'instagram': '📷 Instagram',
+            'snapchat': '👻 Snapchat',
+            'twitter': '🐦 X', 'x.com': '🐦 X',
+            'binance': '₿ Binance',
+            'paypal': '💰 PayPal',
+            'amazon': '📦 Amazon',
+            'netflix': '🎬 Netflix',
+            'uber': '🚗 Uber',
+            'code': '🔐 OTP', 'otp': '🔐 OTP', 'verify': '🔐 OTP', 'رمز': '🔐 OTP', 'كود': '🔐 OTP',
+        }
+        for key, value in cli_map.items():
+            if key in text_lower:
+                return value
+        return '📨 SMS'
+    
+    def extract_clean_message(text, flag, country_code, number):
+        import re
+        clean = text
+        
+        if flag != '🌍':
+            clean = clean.replace(flag, '')
+        
+        clean = re.sub(r'#[A-Za-z]{2,3}\s*', '', clean)
+        clean = re.sub(r'\+\d{1,3}\s*', '', clean)
+        clean = re.sub(r'\b\d{8,15}\b', '', clean)
+        clean = re.sub(r'\d{2,3}[•*]{2,}\d{3,5}', '', clean)
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        
+        code = extract_otp_from_message(text)
+        if code:
+            if len(clean) > 50:
+                return f'{clean[:50]}... <span style="background: #9d4edd; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; margin-right: 5px;">🔐 {code}</span>'
+            else:
+                return f'{clean} <span style="background: #9d4edd; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; margin-right: 5px;">🔐 {code}</span>'
+        
+        return clean[:80] + '...' if len(clean) > 80 else clean
+    
+    rows = ''
+    total_payout = 0
+    for m in messages:
+        text = m[0]
+        msg_date = m[1][:19] if m[1] else ''
+        
+        flag, dial_code, country_name = extract_country_info(text)
+        number = extract_phone_number(text)
+        cli = extract_cli_info(text)
+        message = extract_clean_message(text, flag, dial_code, number)
+        payout = 0.01
+        total_payout += payout
+        
+        display_name = country_name
+        if lang == 'ar':
+            for key, data in COUNTRIES_DB.items():
+                if data['name'] == country_name:
+                    display_name = data['name_ar']
+                    break
+        
+        rows += f'''
+            <tr>
+                <td style="white-space: nowrap;">{msg_date}</td>
+                <td style="white-space: nowrap;">
+                    <span style="display: flex; align-items: center; gap: 8px;">
+                        <span style="font-size: 1.4rem;">{flag}</span>
+                        <span style="font-weight: 500;">{display_name}</span>
+                    </span>
+                </td>
+                <td style="direction: ltr; font-family: 'Courier New', monospace;">{number}</td>
+                <td><span class="cli-badge">{cli}</span></td>
+                <td style="max-width: 400px;">{message}</td>
+                <td style="color: #2cc185; font-weight: 600;">$ {payout:.2f}</td>
+            </tr>
+        '''
+    
+    empty_message = '''
+    <tr>
+        <td colspan="6" style="text-align: center; padding: 50px;">
+            <i class="far fa-comment-dots" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>
+            <span style="color: #8b6baf;">No messages found</span>
+        </td>
+    </tr>
+    '''
+    
+    table_body = rows if rows else empty_message
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Show Records - {t['app_name']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style('light')}
+    <style>
+        * {{ box-sizing: border-box; }}
+        body {{ background: #f8f9fc; }}
+        .records-container {{ max-width: 100% !important; width: 100% !important; padding: 15px 20px !important; margin: 0 !important; }}
+        .page-header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 15px; }}
+        .page-header h1 {{ margin: 0; font-size: 1.8rem; display: flex; align-items: center; gap: 15px; color: #4a1d6e; }}
+        .total-badge {{ background: #f0e8fa; padding: 6px 15px; border-radius: 30px; font-size: 0.9rem; color: #5a189a; border: 1px solid #d9c2f0; }}
+        .table-wrapper {{ overflow-x: auto; border-radius: 16px; background: #ffffff; border: 1px solid #e8e0f0; box-shadow: 0 4px 12px rgba(0,0,0,0.04); margin-bottom: 20px; }}
+        .records-table {{ width: 100%; border-collapse: collapse; min-width: 1100px; font-size: 0.9rem; }}
+        .records-table th {{ background: #f8f5ff; padding: 14px 12px; font-weight: 600; text-transform: uppercase; font-size: 0.8rem; letter-spacing: 0.5px; border-bottom: 2px solid #d9c2f0; white-space: nowrap; color: #5a189a; }}
+        .records-table td {{ padding: 12px; border-bottom: 1px solid #f0e8fa; vertical-align: middle; color: #1a1a2e; }}
+        .records-table tr:hover td {{ background: #fdfbff; }}
+        .cli-badge {{ display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; background: #f0e8fa; color: #5a189a; white-space: nowrap; }}
+        .table-footer {{ display: flex; justify-content: space-between; align-items: center; margin-top: 15px; flex-wrap: wrap; gap: 15px; }}
+        .total-info {{ background: #e8faf1; padding: 10px 20px; border-radius: 30px; border: 1px solid #2cc185; color: #1a1a2e; }}
+        .total-info strong {{ color: #2cc185; font-size: 1.3rem; margin: 0 10px; }}
+        .pagination {{ display: flex; gap: 5px; }}
+        .pagination button {{ padding: 8px 15px; background: #ffffff; border: 1px solid #d9c2f0; border-radius: 8px; color: #4a1d6e; cursor: pointer; font-weight: 500; transition: all 0.2s; }}
+        .pagination button:hover {{ background: #9d4edd; color: white; border-color: #9d4edd; }}
+        .action-bar {{ display: flex; gap: 10px; }}
+        .btn-success {{ background: #2cc185; box-shadow: 0 4px 10px rgba(44, 193, 133, 0.2); }}
+        .btn-success:hover {{ background: #25a86f; }}
+        .records-table th:nth-child(1) {{ width: 160px; }}
+        .records-table th:nth-child(2) {{ width: 180px; }}
+        .records-table th:nth-child(3) {{ width: 140px; }}
+        .records-table th:nth-child(4) {{ width: 110px; }}
+        .records-table th:nth-child(6) {{ width: 100px; }}
+        .header {{ background: #ffffff; border-bottom: 1px solid #e8e0f0; box-shadow: 0 2px 8px rgba(0,0,0,0.02); }}
+        .back-btn {{ background: #f8f5ff; color: #5a189a; border: 1px solid #d9c2f0; }}
+        @media (max-width: 768px) {{ .records-container {{ padding: 10px !important; }} .page-header {{ flex-direction: column; align-items: flex-start; }} }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div style="display: flex; align-items: center; gap: 15px;">
+            <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <span id="syncStatus"></span>
+            <span class="total-badge"><i class="far fa-clock"></i> {last_sync_time}</span>
+        </div>
+    </div>
+    
+    <div class="container records-container">
+        <div class="page-header">
+            <h1><i class="fas fa-table" style="color: #9d4edd;"></i> Show Records</h1>
+            <div class="action-bar">
+                <button class="btn btn-success" onclick="syncMessages()" id="syncBtn"><i class="fas fa-cloud-download-alt"></i> Sync</button>
+                <button class="btn" onclick="location.reload()"><i class="fas fa-redo-alt"></i> Refresh</button>
+            </div>
+        </div>
+        
+        <div class="table-wrapper">
+            <table class="records-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Range</th>
+                        <th>Number</th>
+                        <th>CLI</th>
+                        <th>SMS</th>
+                        <th>My Payout</th>
+                    </tr>
+                </thead>
+                <tbody>{table_body}</tbody>
+            </table>
+        </div>
+        
+        <div class="table-footer">
+            <div class="total-info">
+                <i class="fas fa-envelope"></i> Total SMS <strong>{len(messages)}</strong>
+                <span style="margin: 0 15px; opacity: 0.5;">|</span>
+                <i class="fas fa-dollar-sign"></i> Total Payout <strong>$ {total_payout:.2f}</strong>
+            </div>
+            <div class="pagination">
+                <button><i class="fas fa-angle-double-left"></i> First</button>
+                <button><i class="fas fa-angle-left"></i> Previous</button>
+                <button style="background: #9d4edd; color: white; border-color: #9d4edd;">1</button>
+                <button><i class="fas fa-angle-right"></i> Next</button>
+                <button>Last <i class="fas fa-angle-double-right"></i></button>
+            </div>
+        </div>
+        
+        <div style="text-align: center; margin-top: 15px; color: #8b6baf; font-size: 0.85rem;">
+            Showing 1 to {len(messages)} of {len(messages)} entries
+        </div>
+    </div>
+    
+    <script>
+        async function syncMessages() {{
+            const btn = document.getElementById('syncBtn');
+            const statusEl = document.getElementById('syncStatus');
+            const originalText = btn.innerHTML;
+            
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...';
+            statusEl.innerHTML = '<span style="color: #fdb44b;"><i class="fas fa-spinner fa-spin"></i> Syncing...</span>';
+            
+            try {{
+                const r = await fetch('/api/sync');
+                const d = await r.json();
+                if (d.success) {{
+                    statusEl.innerHTML = '<span style="color: #2cc185;"><i class="fas fa-check-circle"></i> +' + d.new_messages + ' new</span>';
+                    setTimeout(() => location.reload(), 1500);
+                }} else {{
+                    statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> Error</span>';
+                    btn.disabled = false;
+                    btn.innerHTML = originalText;
+                }}
+            }} catch(e) {{
+                statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> Error</span>';
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+            }}
+        }}
+        
+        setInterval(function() {{
+            fetch('/api/sync').then(r => r.json()).then(d => {{ if (d.success && d.new_messages > 0) location.reload(); }});
+        }}, 30000);
+    </script>
+</body>
+</html>
+'''
 @app.route('/user/my-file')
 @login_required
 def user_my_file_page():
@@ -2134,22 +3129,38 @@ def user_my_file_page():
         <h1>📂 {t['my_file']}</h1>
         <div></div>
     </div>
-    
     <div class="container">
-        <div class="card">
-            <h2>{t['added_files']}</h2>
-        </div>
+        <div class="card"><h2>{t['added_files']}</h2></div>
         {files_html}
     </div>
 </body>
 </html>
 '''
 
-@app.route('/user/delete-file')
+@app.route('/user/delete-file', methods=['GET', 'POST'])
 @login_required
-def user_delete_file_page():
+def user_delete_file():
     if is_client(session['user_id']):
         return redirect('/dashboard')
+    
+    if request.method == 'POST':
+        file_name = request.form.get('file_name')
+        user_id = session['user_id']
+        
+        cursor = db_conn.cursor()
+        cursor.execute('SELECT id FROM number_files WHERE display_name = ?', (file_name,))
+        file_result = cursor.fetchone()
+        
+        if file_result:
+            file_id = file_result[0]
+            cursor.execute('''
+                INSERT INTO deleted_user_files (user_id, file_id, file_name, deleted_at)
+                VALUES (?, ?, ?, ?)
+            ''', (user_id, file_id, file_name, datetime.now().isoformat()))
+            db_conn.commit()
+            log_activity(user_id, 'delete_file', f'Deleted file: {file_name}')
+        
+        return redirect('/user/my-file')
     
     lang = session.get('lang', 'ar')
     t = LANGUAGES[lang]
@@ -2171,11 +3182,10 @@ def user_delete_file_page():
         <h1>🗑️ {t['delete_file']}</h1>
         <div></div>
     </div>
-    
     <div class="container">
         <div class="card">
             <h2>{t['delete_file_confirmation']}</h2>
-            <form action="/user/delete-file" method="POST">
+            <form method="POST">
                 <label>{t['file']}:</label>
                 <input type="text" name="file_name" placeholder="{t['enter_file_name']}" required>
                 <button type="submit" class="btn btn-danger" onclick="return confirm('{t['confirm_delete']}')">🗑️ {t['delete']}</button>
@@ -2186,9 +3196,915 @@ def user_delete_file_page():
 </html>
 '''
 
-@app.route('/user/my-sms')
+@app.route('/user/download-file/<int:file_id>')
 @login_required
-def user_my_sms_page():
+def user_download_file(file_id):
+    if is_client(session['user_id']):
+        return redirect('/dashboard')
+    
+    user_id = session['user_id']
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT number FROM user_numbers WHERE user_id = ? AND file_id = ?', (user_id, file_id))
+    numbers = cursor.fetchall()
+    content = '\n'.join([n[0] for n in numbers])
+    response = make_response(content)
+    response.headers['Content-Type'] = 'text/plain'
+    response.headers['Content-Disposition'] = f'attachment; filename=numbers_{file_id}.txt'
+    
+    log_activity(user_id, 'download_file', f'Downloaded file {file_id}')
+    return response
+# ============================================================
+#                      صفحات المالك
+# ============================================================
+
+@app.route('/owner/add-file')
+@owner_required
+def owner_add_file_page():
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = session.get('theme', 'dark')
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{t['add_number']} - {t['app_name']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style(theme)}
+</head>
+<body>
+    <div class="header">
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1>📁 Add File</h1>
+        <div></div>
+    </div>
+    <div class="container">
+        <div class="card">
+            <h2>{t['upload']} {t['file']}</h2>
+            <form action="/owner/add-file" method="POST" enctype="multipart/form-data">
+                <label>{t['select_file']} (TXT/CSV):</label>
+                <input type="file" name="file" accept=".txt,.csv" required>
+                <label>{t['display_name']}:</label>
+                <input type="text" name="display_name" placeholder="{t['example']}: أرقام قطر" required>
+                <button type="submit" class="btn btn-success">📤 {t['upload']}</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+'''
+
+@app.route('/owner/add-file', methods=['POST'])
+@owner_required
+def owner_add_file():
+    if 'file' not in request.files:
+        return redirect('/owner/add-file')
+    
+    file = request.files['file']
+    display_name = request.form.get('display_name')
+    
+    if file and allowed_file(file.filename):
+        filename = secure_filename(f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{file.filename}")
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        
+        numbers = parse_numbers_file(filepath)
+        
+        cursor = db_conn.cursor()
+        cursor.execute('''
+            INSERT INTO number_files (file_name, display_name, numbers, created_at)
+            VALUES (?, ?, ?, ?)
+        ''', (filename, display_name, json.dumps(numbers), datetime.now().isoformat()))
+        db_conn.commit()
+        
+        log_activity(session['user_id'], 'add_file', f'Added file: {display_name} ({len(numbers)} numbers)')
+    
+    return redirect('/dashboard')
+
+@app.route('/owner/delete-file')
+@owner_required
+def owner_delete_file_page():
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = session.get('theme', 'dark')
+    
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT id, display_name FROM number_files ORDER BY id DESC')
+    files = cursor.fetchall()
+    
+    options = ''.join([f'<option value="{f[0]}">{f[1]}</option>' for f in files])
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{t['delete_file']} - {t['app_name']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style(theme)}
+</head>
+<body>
+    <div class="header">
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1>🗑️ Delete File</h1>
+        <div></div>
+    </div>
+    <div class="container">
+        <div class="card">
+            <h2>{t['delete_file']}</h2>
+            <form action="/owner/delete-file" method="POST">
+                <select name="file_id" required>
+                    <option value="">{t['select_file']}</option>
+                    {options}
+                </select>
+                <button type="submit" class="btn btn-danger" onclick="return confirm('{t['confirm_delete']}')">🗑️ {t['delete']}</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+'''
+
+@app.route('/owner/delete-file', methods=['POST'])
+@owner_required
+def owner_delete_file():
+    file_id = request.form.get('file_id')
+    cursor = db_conn.cursor()
+    cursor.execute('DELETE FROM number_files WHERE id = ?', (file_id,))
+    cursor.execute('DELETE FROM user_numbers WHERE file_id = ?', (file_id,))
+    db_conn.commit()
+    
+    log_activity(session['user_id'], 'delete_file', f'Deleted file ID: {file_id}')
+    return redirect('/dashboard')
+
+@app.route('/owner/broadcast')
+@owner_required
+def owner_broadcast_page():
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = session.get('theme', 'dark')
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{t['broadcast']} - {t['app_name']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style(theme)}
+</head>
+<body>
+    <div class="header">
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1>📢 {t['broadcast']}</h1>
+        <div></div>
+    </div>
+    <div class="container">
+        <div class="card">
+            <h2>{t['send']} {t['messages']} {t['all_users']}</h2>
+            <form action="/owner/broadcast" method="POST">
+                <textarea name="message" rows="5" placeholder="{t['type_message']}" required></textarea>
+                <button type="submit" class="btn btn-success">📨 {t['send']}</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+'''
+
+@app.route('/owner/broadcast', methods=['POST'])
+@owner_required
+def owner_broadcast():
+    message = request.form.get('message')
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT id FROM users WHERE username != ? AND is_blocked = 0', (OWNER_USERNAME,))
+    users = cursor.fetchall()
+    
+    cursor.execute('''
+        INSERT INTO broadcasts (message, sent_at, recipients_count)
+        VALUES (?, ?, ?)
+    ''', (message, datetime.now().isoformat(), len(users)))
+    db_conn.commit()
+    
+    for u in users:
+        add_notification(u[0], "📢 بث", message, "info")
+    
+    log_activity(session['user_id'], 'broadcast', f'Sent broadcast to {len(users)} users')
+    return redirect('/dashboard')
+
+@app.route('/owner/create-account')
+@owner_required
+def owner_create_account_page():
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = session.get('theme', 'dark')
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{t['register']} - {t['app_name']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style(theme)}
+</head>
+<body>
+    <div class="header">
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1>👤 Create Account</h1>
+        <div></div>
+    </div>
+    <div class="container">
+        <div class="card">
+            <h2>{t['register']}</h2>
+            <form action="/owner/create-account" method="POST">
+                <label>{t['username']}:</label>
+                <input type="text" name="username" placeholder="Username" required>
+                <label>{t['password']}:</label>
+                <input type="password" name="password" placeholder="Password" required>
+                <button type="submit" class="btn btn-success">✅ {t['register_btn']}</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+'''
+
+@app.route('/owner/create-account', methods=['POST'])
+@owner_required
+def owner_create_account():
+    username = request.form.get('username')
+    password = request.form.get('password')
+    
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT id FROM users WHERE username = ?', (username,))
+    if cursor.fetchone():
+        return redirect('/owner/create-account')
+    
+    cursor.execute('''
+        INSERT INTO users (username, password, created_at)
+        VALUES (?, ?, ?)
+    ''', (username, hash_password(password), datetime.now().isoformat()))
+    db_conn.commit()
+    
+    log_activity(session['user_id'], 'create_account', f'Created account: {username}')
+    return redirect('/dashboard')
+
+@app.route('/owner/increase-limit')
+@owner_required
+def owner_increase_limit_page():
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = session.get('theme', 'dark')
+    
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT id, username, number_limit FROM users WHERE username != ?', (OWNER_USERNAME,))
+    users = cursor.fetchall()
+    
+    options = ''.join([f'<option value="{u[0]}">{u[1]} ({t["current_limit"]}: {u[2] if u[2] else 150})</option>' for u in users])
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{t['increase_limit']} - {t['app_name']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style(theme)}
+</head>
+<body>
+    <div class="header">
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1>⬆️ {t['increase_limit']}</h1>
+        <div></div>
+    </div>
+    <div class="container">
+        <div class="card">
+            <h2>{t['increase_limit']}</h2>
+            <form action="/owner/increase-limit" method="POST">
+                <label>{t['choose_user']}:</label>
+                <select name="user_id" required>
+                    <option value="">{t['choose_user']}</option>
+                    {options}
+                </select>
+                <label>{t['additional_numbers']}:</label>
+                <input type="number" name="limit_amount" placeholder="{t['example']}: 50" required>
+                <button type="submit" class="btn btn-success">⬆️ {t['increase_limit']}</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+'''
+
+@app.route('/owner/increase-limit', methods=['POST'])
+@owner_required
+def owner_increase_limit():
+    user_id = request.form.get('user_id')
+    amount = int(request.form.get('limit_amount', 0))
+    
+    cursor = db_conn.cursor()
+    cursor.execute('UPDATE users SET number_limit = number_limit + ? WHERE id = ?', (amount, user_id))
+    db_conn.commit()
+    
+    log_activity(session['user_id'], 'increase_limit', f'Increased limit for user {user_id} by {amount}')
+    return redirect('/dashboard')
+
+@app.route('/owner/results')
+@owner_required
+def owner_results_page():
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = session.get('theme', 'dark')
+    
+    cursor = db_conn.cursor()
+    cursor.execute('''
+        SELECT u.id, u.username, u.whatsapp, u.is_blocked, u.number_limit,
+               (SELECT COUNT(*) FROM user_numbers WHERE user_id = u.id) as numbers_count,
+               u.role
+        FROM users u
+        WHERE u.username != ?
+        ORDER BY u.id DESC
+    ''', (OWNER_USERNAME,))
+    users = cursor.fetchall()
+    
+    rows = ''
+    for u in users:
+        user_id, username, whatsapp, is_blocked, limit_num, count, role = u
+        blocked_text = t['active'] if not is_blocked else t['blocked']
+        block_btn = f'<a href="/owner/block/{user_id}" class="btn btn-sm btn-warning">🚫 {t["block"]}</a>' if not is_blocked else f'<a href="/owner/unblock/{user_id}" class="btn btn-sm btn-success">✅ {t["unblock"]}</a>'
+        role_badge = {'admin': '👑', 'test': '🧪', 'user': '👤'}.get(role, '👤')
+        rows += f'''
+            <tr>
+                <td>{role_badge} {username}</td>
+                <td>{whatsapp or t['unknown']}</td>
+                <td><span class="badge {'badge-danger' if is_blocked else 'badge-success'}">{blocked_text}</span></td>
+                <td>{count}/{limit_num if limit_num else 150}</td>
+                <td>{block_btn} <a href="/owner/increase-limit?user_id={user_id}" class="btn btn-sm" style="padding:5px 10px;">⬆️ {t['increase_limit']}</a></td>
+            </tr>
+        '''
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{t['results']} - {t['app_name']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style(theme)}
+</head>
+<body>
+    <div class="header">
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1>📊 {t['all_users']}</h1>
+        <button class="btn" onclick="location.reload()"><i class="fas fa-sync-alt"></i> {t['refresh']}</button>
+    </div>
+    <div class="container">
+        <div class="card">
+            <h2>{t['user_list']}</h2>
+            <table>
+                <thead>
+                    <tr><th>{t['user']}</th><th>{t['whatsapp']}</th><th>{t['status']}</th><th>{t['numbers']}</th><th>{t['actions']}</th></tr>
+                </thead>
+                <tbody>{rows if rows else f'<tr><td colspan="5" style="text-align:center;">{t["no_messages"]}</td></tr>'}</tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
+'''
+
+@app.route('/owner/block/<int:user_id>')
+@owner_required
+def owner_block_user(user_id):
+    cursor = db_conn.cursor()
+    cursor.execute('UPDATE users SET is_blocked = 1 WHERE id = ?', (user_id,))
+    db_conn.commit()
+    
+    add_notification(user_id, "🚫 حظر", "تم حظر حسابك. تواصل مع الدعم الفني.", "warning")
+    log_activity(session['user_id'], 'block_user', f'Blocked user {user_id}')
+    return redirect('/owner/results')
+
+@app.route('/owner/unblock/<int:user_id>')
+@owner_required
+def owner_unblock_user(user_id):
+    cursor = db_conn.cursor()
+    cursor.execute('UPDATE users SET is_blocked = 0 WHERE id = ?', (user_id,))
+    db_conn.commit()
+    
+    add_notification(user_id, "✅ فك الحظر", "تم فك الحظر عن حسابك.", "success")
+    log_activity(session['user_id'], 'unblock_user', f'Unblocked user {user_id}')
+    return redirect('/owner/results')
+@app.route('/owner/create-admin')
+@owner_required
+def owner_create_admin_page():
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = session.get('theme', 'dark')
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create Admin - {t['app_name']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style(theme)}
+</head>
+<body>
+    <div class="header">
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1>👑 Create Admin</h1>
+        <div></div>
+    </div>
+    <div class="container">
+        <div class="card">
+            <h2><i class="fas fa-crown"></i> إنشاء حساب أدمن</h2>
+            <p style="margin-bottom: 20px; color: #fdb44b;">
+                <i class="fas fa-info-circle"></i> حساب الأدمن له نفس صلاحيات المالك (إضافة ملفات، بث، إنشاء حسابات، زيادة الحد...)
+            </p>
+            <form action="/owner/create-admin" method="POST">
+                <label>👤 {t['username']}:</label>
+                <input type="text" name="username" placeholder="Username" required>
+                <label>🔐 {t['password']}:</label>
+                <input type="password" name="password" placeholder="Password" required>
+                <button type="submit" class="btn btn-success">👑 Create Admin</button>
+            </form>
+        </div>
+        <div class="card">
+            <h2><i class="fas fa-list"></i> الأدمنز الحاليين</h2>
+            <table><thead><tr><th>{t['username']}</th><th>{t['date']}</th></tr></thead>
+            <tbody id="adminsList"><tr><td colspan="2" style="text-align:center;">جاري التحميل...</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+    <script>
+        async function loadAdmins() {{
+            try {{
+                const r = await fetch('/api/admins/list');
+                const d = await r.json();
+                const tbody = document.getElementById('adminsList');
+                if (d.admins && d.admins.length > 0) {{
+                    tbody.innerHTML = d.admins.map(a => `<tr><td><i class="fas fa-crown" style="color: #fdb44b;"></i> ${{a.username}}</td><td>${{a.created_at ? a.created_at.slice(0, 16) : ''}}</td></tr>`).join('');
+                }} else {{
+                    tbody.innerHTML = '<tr><td colspan="2" style="text-align:center;">لا يوجد أدمنز</td></tr>';
+                }}
+            }} catch(e) {{ document.getElementById('adminsList').innerHTML = '<tr><td colspan="2" style="text-align:center;">خطأ في التحميل</td></tr>'; }}
+        }}
+        loadAdmins();
+    </script>
+</body>
+</html>
+'''
+
+@app.route('/owner/create-admin', methods=['POST'])
+@owner_required
+def owner_create_admin():
+    username = request.form.get('username')
+    password = request.form.get('password')
+    
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT id FROM users WHERE username = ?', (username,))
+    if cursor.fetchone():
+        return redirect('/owner/create-admin')
+    
+    cursor.execute('''
+        INSERT INTO users (username, password, role, number_limit, created_at)
+        VALUES (?, ?, 'admin', 999999, ?)
+    ''', (username, hash_password(password), datetime.now().isoformat()))
+    db_conn.commit()
+    
+    log_activity(session['user_id'], 'create_admin', f'Created admin: {username}')
+    add_notification(session['user_id'], "👑 تم إنشاء أدمن", f"تم إنشاء حساب الأدمن: {username}", "success")
+    return redirect('/owner/create-admin')
+
+@app.route('/owner/create-test')
+@owner_required
+def owner_create_test_page():
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = session.get('theme', 'dark')
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create Test - {t['app_name']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style(theme)}
+</head>
+<body>
+    <div class="header">
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1>🧪 Create Test</h1>
+        <div></div>
+    </div>
+    <div class="container">
+        <div class="card">
+            <h2><i class="fas fa-flask"></i> إنشاء حساب Test</h2>
+            <p style="margin-bottom: 20px; color: #2cc185;">
+                <i class="fas fa-info-circle"></i> حساب Test يظهر له فقط: Test Numbers و Public SMS
+            </p>
+            <form action="/owner/create-test" method="POST">
+                <label>👤 {t['username']}:</label>
+                <input type="text" name="username" placeholder="Username" required>
+                <label>🔐 {t['password']}:</label>
+                <input type="password" name="password" placeholder="Password" required>
+                <button type="submit" class="btn btn-success">🧪 Create Test</button>
+            </form>
+        </div>
+        <div class="card">
+            <h2><i class="fas fa-list"></i> حسابات Test الحالية</h2>
+            <table><thead><tr><th>{t['username']}</th><th>{t['date']}</th></tr></thead>
+            <tbody id="testList"><tr><td colspan="2" style="text-align:center;">جاري التحميل...</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+    <script>
+        async function loadTests() {{
+            try {{
+                const r = await fetch('/api/tests/list');
+                const d = await r.json();
+                const tbody = document.getElementById('testList');
+                if (d.tests && d.tests.length > 0) {{
+                    tbody.innerHTML = d.tests.map(t => `<tr><td><i class="fas fa-flask" style="color: #2cc185;"></i> ${{t.username}}</td><td>${{t.created_at ? t.created_at.slice(0, 16) : ''}}</td></tr>`).join('');
+                }} else {{
+                    tbody.innerHTML = '<tr><td colspan="2" style="text-align:center;">لا يوجد حسابات Test</td></tr>';
+                }}
+            }} catch(e) {{ document.getElementById('testList').innerHTML = '<tr><td colspan="2" style="text-align:center;">خطأ في التحميل</td></tr>'; }}
+        }}
+        loadTests();
+    </script>
+</body>
+</html>
+'''
+
+@app.route('/owner/create-test', methods=['POST'])
+@owner_required
+def owner_create_test():
+    username = request.form.get('username')
+    password = request.form.get('password')
+    
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT id FROM users WHERE username = ?', (username,))
+    if cursor.fetchone():
+        return redirect('/owner/create-test')
+    
+    cursor.execute('''
+        INSERT INTO users (username, password, role, created_at)
+        VALUES (?, ?, 'test', ?)
+    ''', (username, hash_password(password), datetime.now().isoformat()))
+    db_conn.commit()
+    
+    log_activity(session['user_id'], 'create_test', f'Created test account: {username}')
+    add_notification(session['user_id'], "🧪 تم إنشاء حساب Test", f"تم إنشاء حساب Test: {username}", "success")
+    return redirect('/owner/create-test')
+@app.route('/notifications')
+@login_required
+def notifications_page():
+    user_id = session['user_id']
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = session.get('theme', 'dark')
+    
+    cursor = db_conn.cursor()
+    cursor.execute('''
+        SELECT id, title, message, type, created_at, is_read
+        FROM notifications
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        LIMIT 50
+    ''', (user_id,))
+    notifications = cursor.fetchall()
+    
+    cursor.execute('UPDATE notifications SET is_read = 1 WHERE user_id = ?', (user_id,))
+    db_conn.commit()
+    
+    notif_html = ''
+    for n in notifications:
+        icon = {'otp': '🔐', 'info': 'ℹ️', 'success': '✅', 'warning': '⚠️'}.get(n[3], '🔔')
+        notif_html += f'''
+            <div class="card" style="margin-bottom: 10px; {'opacity: 0.7;' if n[5] else ''}">
+                <h3>{icon} {n[1]}</h3>
+                <p>{n[2]}</p>
+                <small>{n[4][:16]}</small>
+            </div>
+        '''
+    
+    if not notif_html:
+        notif_html = f'<div class="card"><p>{t["no_messages"]}</p></div>'
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{t['notifications']} - {t['app_name']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style(theme)}
+</head>
+<body>
+    <div class="header">
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1>🔔 {t['notifications']}</h1>
+        <div></div>
+    </div>
+    <div class="container">{notif_html}</div>
+</body>
+</html>
+'''
+
+@app.route('/profile')
+@login_required
+def profile_page():
+    user_id = session['user_id']
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = session.get('theme', 'dark')
+    
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
+    user = cursor.fetchone()
+    
+    user_theme = user[6] if len(user) > 6 and user[6] else 'dark'
+    user_lang = user[7] if len(user) > 7 and user[7] else 'ar'
+    user_whatsapp = user[3] if len(user) > 3 else ''
+    user_email = user[4] if len(user) > 4 else ''
+    user_created = user[10] if len(user) > 10 else None
+    user_last_login = user[11] if len(user) > 11 else None
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{t['profile']} - {t['app_name']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style(theme)}
+</head>
+<body>
+    <div class="header">
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1>👤 {t['profile']}</h1>
+        <div></div>
+    </div>
+    <div class="container">
+        <div class="card">
+            <h2>{t['account_info']}</h2>
+            <form action="/profile/update" method="POST">
+                <label>👤 {t['username']}:</label>
+                <input type="text" value="{user[1]}" readonly style="background: rgba(0,0,0,0.5);">
+                <label>🔐 {t['password']}:</label>
+                <input type="password" name="password" placeholder="{t['leave_empty']}">
+                <label>📱 {t['whatsapp']}:</label>
+                <input type="text" name="whatsapp" value="{user_whatsapp}" placeholder="{t['whatsapp']}">
+                <label>📧 {t['email']}:</label>
+                <input type="email" name="email" value="{user_email}" placeholder="Email">
+                <label>🌐 {t['language']}:</label>
+                <select name="language">
+                    <option value="ar" {"selected" if user_lang == 'ar' else ""}>🇪🇬 العربية</option>
+                    <option value="en" {"selected" if user_lang == 'en' else ""}>🇬🇧 English</option>
+                </select>
+                <label>🎨 {t['theme']}:</label>
+                <select name="theme">
+                    <option value="dark" {"selected" if user_theme == 'dark' else ""}>🌙 {t['dark_mode']}</option>
+                    <option value="light" {"selected" if user_theme == 'light' else ""}>☀️ {t['light_mode']}</option>
+                </select>
+                <button type="submit" class="btn btn-success">{t['save']}</button>
+            </form>
+        </div>
+        <div class="card">
+            <h2>📊 {t['stats']}</h2>
+            <p>📱 {t['numbers']}: {get_user_numbers_count(user_id)}</p>
+            <p>📅 {t['registration_date']}: {user_created[:10] if user_created else t['unknown']}</p>
+            <p>🕐 {t['last_login']}: {user_last_login[:16] if user_last_login else t['unknown']}</p>
+        </div>
+    </div>
+</body>
+</html>
+'''
+
+@app.route('/profile/update', methods=['POST'])
+@login_required
+def update_profile():
+    user_id = session['user_id']
+    password = request.form.get('password')
+    whatsapp = request.form.get('whatsapp')
+    email = request.form.get('email')
+    language = request.form.get('language', 'ar')
+    theme = request.form.get('theme', 'dark')
+    
+    cursor = db_conn.cursor()
+    
+    if password:
+        cursor.execute('UPDATE users SET password = ? WHERE id = ?', (hash_password(password), user_id))
+    
+    try:
+        cursor.execute('UPDATE users SET whatsapp = ?, email = ?, language = ?, theme = ? WHERE id = ?',
+                      (whatsapp, email, language, theme, user_id))
+        db_conn.commit()
+    except:
+        pass
+    
+    session['lang'] = language
+    session['theme'] = theme
+    log_activity(user_id, 'update_profile', 'Updated profile')
+    return redirect('/profile')
+
+@app.route('/activity-log')
+@owner_required
+def activity_log_page():
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = session.get('theme', 'dark')
+    
+    cursor = db_conn.cursor()
+    cursor.execute('''
+        SELECT al.action, al.details, al.created_at, u.username
+        FROM activity_logs al
+        JOIN users u ON al.user_id = u.id
+        ORDER BY al.created_at DESC
+        LIMIT 100
+    ''')
+    logs = cursor.fetchall()
+    
+    rows = ''.join([f'<tr><td>{l[3]}</td><td>{l[0]}</td><td>{l[1]}</td><td>{l[2][:16]}</td></tr>' for l in logs])
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{t['activity_log']} - {t['app_name']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style(theme)}
+</head>
+<body>
+    <div class="header">
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1>📝 {t['activity_log']}</h1>
+        <button class="btn" onclick="location.reload()">{t['refresh']}</button>
+    </div>
+    <div class="container">
+        <div class="card">
+            <h2>{t['last_100_activities']}</h2>
+            <table>
+                <thead><tr><th>{t['user']}</th><th>{t['activity']}</th><th>{t['details']}</th><th>{t['date']}</th></tr></thead>
+                <tbody>{rows if rows else f'<tr><td colspan="4" style="text-align:center;">{t["no_messages"]}</td></tr>'}</tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
+'''
+# ============================================================
+#                      صفحة إنشاء عميل (Client)
+# ============================================================
+
+@app.route('/user/client')
+@login_required
+def user_client_page():
+    if is_client(session['user_id']):
+        return redirect('/dashboard')
+    
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = session.get('theme', 'dark')
+    
+    cursor = db_conn.cursor()
+    cursor.execute('''
+        SELECT id, username, created_at FROM users 
+        WHERE parent_id = ? AND is_client = 1
+        ORDER BY id DESC
+    ''', (session['user_id'],))
+    clients = cursor.fetchall()
+    
+    clients_html = ''
+    for c in clients:
+        cursor.execute('SELECT COUNT(*) FROM client_numbers WHERE client_id = ?', (c[0],))
+        count = cursor.fetchone()[0]
+        clients_html += f'''
+            <tr>
+                <td><i class="fas fa-user"></i> {c[1]}</td>
+                <td><span class="badge badge-success">{count}</span></td>
+                <td>{c[2][:16] if c[2] else ''}</td>
+                <td>
+                    <a href="/user/client/delete/{c[0]}" class="btn btn-sm btn-danger" onclick="return confirm('{t['confirm_delete']}')">🗑️</a>
+                </td>
+            </tr>
+        '''
+    
+    if not clients_html:
+        clients_html = f'<tr><td colspan="4" style="text-align:center;">{t["no_messages"]}</td></tr>'
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{t['client']} - {t['app_name']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style(theme)}
+</head>
+<body>
+    <div class="header">
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1>👤 {t['client']}</h1>
+        <div></div>
+    </div>
+    
+    <div class="container">
+        <div class="card">
+            <h2><i class="fas fa-user-plus"></i> {t['create_client']}</h2>
+            <form action="/user/client/create" method="POST">
+                <label><i class="fas fa-user"></i> {t['client_username']}:</label>
+                <input type="text" name="username" placeholder="{t['username']}" required>
+                <label><i class="fas fa-lock"></i> {t['client_password']}:</label>
+                <input type="password" name="password" placeholder="{t['password']}" required>
+                <button type="submit" class="btn btn-success">✅ {t['create_client']}</button>
+            </form>
+        </div>
+        
+        <div class="card">
+            <h2><i class="fas fa-users"></i> {t['current_clients']}</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>{t['username']}</th>
+                        <th>{t['numbers']}</th>
+                        <th>{t['date']}</th>
+                        <th>{t['actions']}</th>
+                    </tr>
+                </thead>
+                <tbody>{clients_html}</tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
+'''
+
+@app.route('/user/client/create', methods=['POST'])
+@login_required
+def create_client():
+    if is_client(session['user_id']):
+        return redirect('/dashboard')
+    
+    username = request.form.get('username')
+    password = request.form.get('password')
+    parent_id = session['user_id']
+    
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT id FROM users WHERE username = ?', (username,))
+    if cursor.fetchone():
+        return redirect('/user/client')
+    
+    cursor.execute('''
+        INSERT INTO users (username, password, parent_id, is_client, number_limit, created_at)
+        VALUES (?, ?, ?, 1, 1000, ?)
+    ''', (username, hash_password(password), parent_id, datetime.now().isoformat()))
+    db_conn.commit()
+    
+    log_activity(parent_id, 'create_client', f'Created client: {username}')
+    add_notification(parent_id, "👤 تم إنشاء عميل", f"تم إنشاء حساب العميل: {username}", "success")
+    
+    return redirect('/user/client')
+
+@app.route('/user/client/delete/<int:client_id>')
+@login_required
+def delete_client(client_id):
+    if is_client(session['user_id']):
+        return redirect('/dashboard')
+    
+    user_id = session['user_id']
+    
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT id FROM users WHERE id = ? AND parent_id = ?', (client_id, user_id))
+    if cursor.fetchone():
+        cursor.execute('DELETE FROM users WHERE id = ?', (client_id,))
+        cursor.execute('DELETE FROM client_numbers WHERE client_id = ?', (client_id,))
+        cursor.execute('DELETE FROM user_codes WHERE user_id = ?', (client_id,))
+        db_conn.commit()
+        log_activity(user_id, 'delete_client', f'Deleted client ID: {client_id}')
+    
+    return redirect('/user/client')
+@app.route('/user/add-number-client')
+@login_required
+def user_add_number_client_page():
     if is_client(session['user_id']):
         return redirect('/dashboard')
     
@@ -2198,18 +4114,53 @@ def user_my_sms_page():
     theme = session.get('theme', 'dark')
     
     cursor = db_conn.cursor()
-    cursor.execute('''
-        SELECT number, code, received_at
-        FROM user_codes
-        WHERE user_id = ?
-        ORDER BY received_at DESC
-        LIMIT 100
-    ''', (user_id,))
-    codes = cursor.fetchall()
     
-    rows = ''
-    for c in codes:
-        rows += f'<tr><td>{c[0] or t["unknown"]}</td><td><strong>{c[1]}</strong></td><td>{c[2][:16] if c[2] else ""}</td></tr>'
+    cursor.execute('SELECT id, username FROM users WHERE parent_id = ? AND is_client = 1', (user_id,))
+    clients = cursor.fetchall()
+    
+    if not clients:
+        return f'''
+        <!DOCTYPE html>
+        <html>
+        <head><title>{t['add_number_client']}</title>{get_base_style(theme)}</head>
+        <body>
+            <div class="header">
+                <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+                <h1>📱 {t['add_number_client']}</h1>
+                <div></div>
+            </div>
+            <div class="container">
+                <div class="card">
+                    <p style="text-align:center; padding: 40px;">
+                        <i class="fas fa-users" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>
+                        لا يوجد عملاء. قم بإنشاء عميل أولاً من صفحة Client
+                    </p>
+                    <div style="text-align: center;">
+                        <a href="/user/client" class="btn btn-success">👤 إنشاء عميل</a>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        '''
+    
+    clients_options = ''.join([f'<option value="{c[0]}">{c[1]}</option>' for c in clients])
+    
+    cursor.execute('''
+        SELECT nf.id, nf.display_name 
+        FROM number_files nf
+        WHERE nf.id NOT IN (
+            SELECT file_id FROM deleted_user_files WHERE user_id = ?
+        )
+        ORDER BY nf.id DESC
+    ''', (user_id,))
+    files = cursor.fetchall()
+    
+    files_options = ''.join([f'<option value="{f[0]}">{f[1]}</option>' for f in files])
+    
+    number_options = [50, 100, 150, 200, 500, 1000, 3000, 5000, 10000]
+    numbers_html = ''.join([f'<option value="{n}">{n}</option>' for n in number_options])
+    numbers_html += '<option value="all">All</option>'
     
     return f'''
 <!DOCTYPE html>
@@ -2217,304 +4168,510 @@ def user_my_sms_page():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['my_sms']} - {t['app_name']}</title>
+    <title>{t['add_number_client']} - {t['app_name']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style(theme)}
+    <style>
+        .info-banner {{
+            background: linear-gradient(135deg, #2cc185, #1a9e6a);
+            color: white;
+            padding: 20px;
+            border-radius: 20px;
+            margin-bottom: 25px;
+        }}
+        .info-banner h3 {{ color: white; margin-bottom: 10px; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1>📱 {t['add_number_client']}</h1>
+        <div></div>
+    </div>
+    
+    <div class="container" style="max-width: 700px;">
+        <div class="info-banner">
+            <h3><i class="fas fa-info-circle"></i> إضافة أرقام للعميل</h3>
+            <p>يمكنك إضافة أرقام من الملفات المتاحة إلى حساب العميل. لا يوجد حد أقصى لعدد الأرقام التي يمكن للعميل استقبالها.</p>
+        </div>
+        
+        <div class="card">
+            <h2><i class="fas fa-exchange-alt"></i> {t['add_number_client']}</h2>
+            <form action="/user/add-number-client" method="POST">
+                <label><i class="fas fa-user"></i> {t['select_client']}:</label>
+                <select name="client_id" required>
+                    <option value="">{t['select_client']}</option>
+                    {clients_options}
+                </select>
+                
+                <label><i class="fas fa-folder"></i> {t['select_file']}:</label>
+                <select name="file_id" required>
+                    <option value="">{t['select_file']}</option>
+                    {files_options}
+                </select>
+                
+                <label><i class="fas fa-calculator"></i> {t['select_number_total']}:</label>
+                <select name="number_total" required>
+                    {numbers_html}
+                </select>
+                
+                <button type="submit" class="btn btn-success">📱 {t['add_number']}</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+'''
+
+@app.route('/user/add-number-client', methods=['POST'])
+@login_required
+def add_number_client():
+    if is_client(session['user_id']):
+        return redirect('/dashboard')
+    
+    user_id = session['user_id']
+    client_id = request.form.get('client_id')
+    file_id = request.form.get('file_id')
+    number_total = request.form.get('number_total')
+    
+    cursor = db_conn.cursor()
+    
+    cursor.execute('SELECT id FROM users WHERE id = ? AND parent_id = ?', (client_id, user_id))
+    if not cursor.fetchone():
+        return redirect('/dashboard')
+    
+    cursor.execute('SELECT numbers FROM number_files WHERE id = ?', (file_id,))
+    result = cursor.fetchone()
+    
+    if result:
+        numbers = json.loads(result[0])
+        
+        if number_total == 'all':
+            numbers_to_add = numbers
+        else:
+            numbers_to_add = numbers[:int(number_total)]
+        
+        added = 0
+        for num in numbers_to_add:
+            cursor.execute('''
+                INSERT OR IGNORE INTO client_numbers (client_id, file_id, number, added_at, added_by)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (client_id, file_id, num, datetime.now().isoformat(), user_id))
+            if cursor.rowcount > 0:
+                added += 1
+        
+        db_conn.commit()
+        log_activity(user_id, 'add_numbers_client', f'Added {added} numbers to client {client_id}')
+        add_notification(user_id, "✅ تمت الإضافة", f"تمت إضافة {added} رقم للعميل", "success")
+    
+    return redirect('/user/client')
+@app.route('/user/test-number')
+@login_required
+def user_test_number_page():
+    if is_client(session['user_id']):
+        return redirect('/dashboard')
+    
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = session.get('theme', 'dark')
+    
+    cursor = db_conn.cursor()
+    cursor.execute('''
+        SELECT id, country_name, numbers_count, created_at 
+        FROM test_number_files 
+        ORDER BY id DESC
+    ''')
+    files = cursor.fetchall()
+    
+    files_html = ''
+    for f in files:
+        files_html += f'''
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <h3 style="margin: 0 0 8px 0;">🧪 {f[1]}</h3>
+                        <p style="margin: 0; opacity: 0.8;"><i class="fas fa-database"></i> {t['numbers_count']}: <strong>{f[2]}</strong></p>
+                        <p style="margin: 5px 0 0 0; opacity: 0.6; font-size: 0.9rem;"><i class="far fa-calendar"></i> {f[3][:16] if f[3] else ''}</p>
+                    </div>
+                    <div>
+                        <a href="/user/test-number/view/{f[0]}" class="btn btn-success">👀 عرض الأرقام</a>
+                        <a href="/user/test-number/download/{f[0]}" class="btn" style="background: #fdb44b;">📥 تحميل</a>
+                    </div>
+                </div>
+            </div>
+        '''
+    
+    if not files_html:
+        files_html = f'<div class="card"><p style="text-align:center; padding: 40px;"><i class="fas fa-flask" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>{t["no_messages"]}</p></div>'
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{t['test_number']} - {t['app_name']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style(theme)}
+    <style>
+        .header {{ background: #ffffff; border-bottom: 1px solid #e8e0f0; }}
+        .stats-card {{
+            background: linear-gradient(135deg, #fdb44b, #e67e22);
+            color: white;
+            padding: 20px;
+            border-radius: 20px;
+            margin-bottom: 25px;
+        }}
+        .stats-card h3 {{ color: white; margin-bottom: 10px; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1 style="color: #5a189a;">🧪 {t['test_number']}</h1>
+        <div></div>
+    </div>
+    
+    <div class="container">
+        <div class="stats-card">
+            <h3><i class="fas fa-flask"></i> أرقام الاختبار المتاحة</h3>
+            <p>يمكنك عرض وتحميل أرقام الاختبار من مختلف الدول</p>
+            <p style="margin-top: 10px; font-size: 1.2rem;">عدد الملفات: <strong>{len(files)}</strong></p>
+        </div>
+        
+        {files_html}
+    </div>
+</body>
+</html>
+'''
+
+@app.route('/user/test-number/view/<int:file_id>')
+@login_required
+def view_test_numbers(file_id):
+    if is_client(session['user_id']):
+        return redirect('/dashboard')
+    
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = session.get('theme', 'dark')
+    
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT country_name, numbers FROM test_number_files WHERE id = ?', (file_id,))
+    result = cursor.fetchone()
+    
+    if not result:
+        return redirect('/user/test-number')
+    
+    country_name = result[0]
+    numbers = json.loads(result[1])
+    
+    rows = ''
+    for i, num in enumerate(numbers[:200], 1):
+        rows += f'<tr><td>{i}</td><td style="direction: ltr; font-family: monospace;">{num}</td></tr>'
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{country_name} - {t['test_number']}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    {get_base_style(theme)}
+    <style>
+        .header {{ background: #ffffff; border-bottom: 1px solid #e8e0f0; }}
+        .table-wrapper {{ max-height: 600px; overflow-y: auto; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <a href="/user/test-number" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1 style="color: #5a189a;">🧪 {country_name}</h1>
+        <a href="/user/test-number/download/{file_id}" class="btn" style="background: #fdb44b;">📥 تحميل الكل</a>
+    </div>
+    
+    <div class="container">
+        <div class="card">
+            <h2><i class="fas fa-flag"></i> {country_name} - {len(numbers)} {t['numbers']}</h2>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr><th>#</th><th>{t['phone']}</th></tr>
+                    </thead>
+                    <tbody>{rows}</tbody>
+                </table>
+            </div>
+            {f'<p style="margin-top:15px; text-align:center; color:#9d4edd;"><i class="fas fa-ellipsis-h"></i> و {len(numbers)-200} رقم آخر...</p>' if len(numbers) > 200 else ''}
+        </div>
+    </div>
+</body>
+</html>
+'''
+
+@app.route('/user/test-number/download/<int:file_id>')
+@login_required
+def download_test_numbers(file_id):
+    if is_client(session['user_id']):
+        return redirect('/dashboard')
+    
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT country_name, numbers FROM test_number_files WHERE id = ?', (file_id,))
+    result = cursor.fetchone()
+    
+    if result:
+        country_name = result[0]
+        numbers = json.loads(result[1])
+        content = '\n'.join(numbers)
+        response = make_response(content)
+        response.headers['Content-Type'] = 'text/plain'
+        response.headers['Content-Disposition'] = f'attachment; filename={country_name}_numbers.txt'
+        
+        log_activity(session['user_id'], 'download_test_numbers', f'Downloaded test numbers: {country_name}')
+        return response
+    
+    return redirect('/user/test-number')
+@app.route('/owner/add-number-test')
+@owner_required
+def owner_add_number_test_page():
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    theme = session.get('theme', 'dark')
+    
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT id, country_name, numbers_count, created_at FROM test_number_files ORDER BY id DESC')
+    files = cursor.fetchall()
+    
+    files_html = ''
+    for f in files:
+        files_html += f'''
+            <tr>
+                <td>{f[1]}</td>
+                <td>{f[2]}</td>
+                <td>{f[3][:16] if f[3] else ''}</td>
+                <td>
+                    <a href="/owner/delete-test-number/{f[0]}" class="btn btn-sm btn-danger" onclick="return confirm('{t['confirm_delete']}')">🗑️</a>
+                </td>
+            </tr>
+        '''
+    
+    if not files_html:
+        files_html = f'<tr><td colspan="4" style="text-align:center;">لا يوجد ملفات</td></tr>'
+    
+    return f'''
+<!DOCTYPE html>
+<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{t['add_number_test']} - {t['app_name']}</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     {get_base_style(theme)}
 </head>
 <body>
     <div class="header">
         <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>💬 {t['my_sms']}</h1>
+        <h1>🧪 {t['add_number_test']}</h1>
         <div></div>
     </div>
     
     <div class="container">
         <div class="card">
-            <h2>{t['your_codes']}</h2>
+            <h2><i class="fas fa-upload"></i> {t['upload']} {t['test_number']}</h2>
+            <form action="/owner/add-number-test" method="POST" enctype="multipart/form-data">
+                <label><i class="fas fa-file"></i> {t['select_file']} (TXT/CSV):</label>
+                <input type="file" name="file" accept=".txt,.csv" required>
+                
+                <label><i class="fas fa-flag"></i> {t['country_name']}:</label>
+                <input type="text" name="country_name" placeholder="{t['example']}: Qatar" required>
+                
+                <label><i class="fas fa-calculator"></i> {t['numbers_count']}:</label>
+                <input type="number" name="numbers_count" placeholder="{t['example']}: 1000" required>
+                
+                <button type="submit" class="btn btn-success">📤 {t['upload']}</button>
+            </form>
+        </div>
+        
+        <div class="card">
+            <h2><i class="fas fa-list"></i> الملفات الحالية</h2>
             <table>
-                <thead><tr><th>{t['phone']}</th><th>{t['code']}</th><th>{t['date']}</th></tr></thead>
-                <tbody>{rows if rows else f'<tr><td colspan="3" style="text-align:center;">{t["no_codes"]}</td></tr>'}</tbody>
+                <thead>
+                    <tr>
+                        <th>{t['country_name']}</th>
+                        <th>{t['numbers_count']}</th>
+                        <th>{t['date']}</th>
+                        <th>{t['actions']}</th>
+                    </tr>
+                </thead>
+                <tbody>{files_html}</tbody>
             </table>
         </div>
     </div>
 </body>
 </html>
 '''
-@app.route('/user/public-sms')
+
+@app.route('/owner/add-number-test', methods=['POST'])
+@owner_required
+def owner_add_number_test():
+    if 'file' not in request.files:
+        return redirect('/owner/add-number-test')
+    
+    file = request.files['file']
+    country_name = request.form.get('country_name')
+    numbers_count = request.form.get('numbers_count')
+    
+    if file and allowed_file(file.filename):
+        filename = secure_filename(f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{file.filename}")
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        
+        numbers = parse_numbers_file(filepath)
+        
+        cursor = db_conn.cursor()
+        cursor.execute('''
+            INSERT INTO test_number_files (file_name, country_name, numbers, numbers_count, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (filename, country_name, json.dumps(numbers), int(numbers_count), datetime.now().isoformat()))
+        db_conn.commit()
+        
+        log_activity(session['user_id'], 'add_test_numbers', f'Added test numbers: {country_name} ({len(numbers)} numbers)')
+        add_notification(session['user_id'], "🧪 تمت الإضافة", f"تمت إضافة {len(numbers)} رقم اختبار لـ {country_name}", "success")
+    
+    return redirect('/owner/add-number-test')
+
+@app.route('/owner/delete-test-number/<int:file_id>')
+@owner_required
+def owner_delete_test_number(file_id):
+    cursor = db_conn.cursor()
+    cursor.execute('DELETE FROM test_number_files WHERE id = ?', (file_id,))
+    db_conn.commit()
+    
+    log_activity(session['user_id'], 'delete_test_numbers', f'Deleted test numbers file ID: {file_id}')
+    return redirect('/owner/add-number-test')
+@app.route('/user/my-number')
 @login_required
-def user_public_sms_page():
+def user_my_number_page():
+    user_id = session['user_id']
     lang = session.get('lang', 'ar')
     t = LANGUAGES[lang]
-    theme = 'light'  # تثبيت الثيم الأبيض
+    theme = 'light'
     
-    cursor = db_conn.cursor()
-    cursor.execute('''
-        SELECT text, date FROM messages 
-        WHERE is_deleted = 0 
-        ORDER BY message_id DESC 
-        LIMIT 100
-    ''')
-    messages = cursor.fetchall()
+    filter_file = request.args.get('file', 'all')
     
-    cursor.execute("SELECT value FROM stats WHERE key = 'last_sync'")
-    last_sync = cursor.fetchone()
-    last_sync_time = last_sync[0] if last_sync else t['no_messages']
+    if is_client(user_id):
+        cursor = db_conn.cursor()
+        if filter_file != 'all':
+            cursor.execute('''
+                SELECT cn.number, nf.display_name, cn.added_at, cn.file_id
+                FROM client_numbers cn
+                LEFT JOIN number_files nf ON cn.file_id = nf.id
+                WHERE cn.client_id = ? AND nf.display_name = ?
+                ORDER BY cn.added_at DESC
+            ''', (user_id, filter_file))
+        else:
+            cursor.execute('''
+                SELECT cn.number, nf.display_name, cn.added_at, cn.file_id
+                FROM client_numbers cn
+                LEFT JOIN number_files nf ON cn.file_id = nf.id
+                WHERE cn.client_id = ?
+                ORDER BY cn.added_at DESC
+            ''', (user_id,))
+        numbers = cursor.fetchall()
+        
+        cursor.execute('''
+            SELECT DISTINCT nf.display_name
+            FROM client_numbers cn
+            JOIN number_files nf ON cn.file_id = nf.id
+            WHERE cn.client_id = ?
+            ORDER BY nf.display_name
+        ''', (user_id,))
+        available_files = [row[0] for row in cursor.fetchall()]
+    else:
+        cursor = db_conn.cursor()
+        if filter_file != 'all':
+            cursor.execute('''
+                SELECT un.number, nf.display_name, un.added_at, un.file_id
+                FROM user_numbers un
+                LEFT JOIN number_files nf ON un.file_id = nf.id
+                WHERE un.user_id = ? AND nf.display_name = ?
+                ORDER BY un.added_at DESC
+            ''', (user_id, filter_file))
+        else:
+            cursor.execute('''
+                SELECT un.number, nf.display_name, un.added_at, un.file_id
+                FROM user_numbers un
+                LEFT JOIN number_files nf ON un.file_id = nf.id
+                WHERE un.user_id = ?
+                ORDER BY un.added_at DESC
+            ''', (user_id,))
+        numbers = cursor.fetchall()
+        
+        cursor.execute('''
+            SELECT DISTINCT nf.display_name
+            FROM user_numbers un
+            JOIN number_files nf ON un.file_id = nf.id
+            WHERE un.user_id = ?
+            ORDER BY nf.display_name
+        ''', (user_id,))
+        available_files = [row[0] for row in cursor.fetchall()]
     
-    # ============================================================
-    #         قاموس شامل لجميع دول العالم (العلم + الكود + الاسم)
-    # ============================================================
-    COUNTRIES_DB = {
-        # الدول العربية
-        'dz': {'flag': '🇩🇿', 'code': '+213', 'name': 'Algeria', 'name_ar': 'الجزائر'},
-        'eg': {'flag': '🇪🇬', 'code': '+20', 'name': 'Egypt', 'name_ar': 'مصر'},
-        'sa': {'flag': '🇸🇦', 'code': '+966', 'name': 'Saudi Arabia', 'name_ar': 'السعودية'},
-        'ae': {'flag': '🇦🇪', 'code': '+971', 'name': 'UAE', 'name_ar': 'الإمارات'},
-        'kw': {'flag': '🇰🇼', 'code': '+965', 'name': 'Kuwait', 'name_ar': 'الكويت'},
-        'qa': {'flag': '🇶🇦', 'code': '+974', 'name': 'Qatar', 'name_ar': 'قطر'},
-        'bh': {'flag': '🇧🇭', 'code': '+973', 'name': 'Bahrain', 'name_ar': 'البحرين'},
-        'om': {'flag': '🇴🇲', 'code': '+968', 'name': 'Oman', 'name_ar': 'عمان'},
-        'jo': {'flag': '🇯🇴', 'code': '+962', 'name': 'Jordan', 'name_ar': 'الأردن'},
-        'lb': {'flag': '🇱🇧', 'code': '+961', 'name': 'Lebanon', 'name_ar': 'لبنان'},
-        'iq': {'flag': '🇮🇶', 'code': '+964', 'name': 'Iraq', 'name_ar': 'العراق'},
-        'sy': {'flag': '🇸🇾', 'code': '+963', 'name': 'Syria', 'name_ar': 'سوريا'},
-        'ps': {'flag': '🇵🇸', 'code': '+970', 'name': 'Palestine', 'name_ar': 'فلسطين'},
-        'ma': {'flag': '🇲🇦', 'code': '+212', 'name': 'Morocco', 'name_ar': 'المغرب'},
-        'tn': {'flag': '🇹🇳', 'code': '+216', 'name': 'Tunisia', 'name_ar': 'تونس'},
-        'ly': {'flag': '🇱🇾', 'code': '+218', 'name': 'Libya', 'name_ar': 'ليبيا'},
-        'sd': {'flag': '🇸🇩', 'code': '+249', 'name': 'Sudan', 'name_ar': 'السودان'},
-        'ye': {'flag': '🇾🇪', 'code': '+967', 'name': 'Yemen', 'name_ar': 'اليمن'},
-        'so': {'flag': '🇸🇴', 'code': '+252', 'name': 'Somalia', 'name_ar': 'الصومال'},
-        'dj': {'flag': '🇩🇯', 'code': '+253', 'name': 'Djibouti', 'name_ar': 'جيبوتي'},
-        'km': {'flag': '🇰🇲', 'code': '+269', 'name': 'Comoros', 'name_ar': 'جزر القمر'},
-        'mr': {'flag': '🇲🇷', 'code': '+222', 'name': 'Mauritania', 'name_ar': 'موريتانيا'},
-        
-        # دول أوروبا
-        'gb': {'flag': '🇬🇧', 'code': '+44', 'name': 'United Kingdom', 'name_ar': 'بريطانيا'},
-        'fr': {'flag': '🇫🇷', 'code': '+33', 'name': 'France', 'name_ar': 'فرنسا'},
-        'de': {'flag': '🇩🇪', 'code': '+49', 'name': 'Germany', 'name_ar': 'ألمانيا'},
-        'it': {'flag': '🇮🇹', 'code': '+39', 'name': 'Italy', 'name_ar': 'إيطاليا'},
-        'es': {'flag': '🇪🇸', 'code': '+34', 'name': 'Spain', 'name_ar': 'إسبانيا'},
-        'pt': {'flag': '🇵🇹', 'code': '+351', 'name': 'Portugal', 'name_ar': 'البرتغال'},
-        'nl': {'flag': '🇳🇱', 'code': '+31', 'name': 'Netherlands', 'name_ar': 'هولندا'},
-        'be': {'flag': '🇧🇪', 'code': '+32', 'name': 'Belgium', 'name_ar': 'بلجيكا'},
-        'ch': {'flag': '🇨🇭', 'code': '+41', 'name': 'Switzerland', 'name_ar': 'سويسرا'},
-        'at': {'flag': '🇦🇹', 'code': '+43', 'name': 'Austria', 'name_ar': 'النمسا'},
-        'se': {'flag': '🇸🇪', 'code': '+46', 'name': 'Sweden', 'name_ar': 'السويد'},
-        'no': {'flag': '🇳🇴', 'code': '+47', 'name': 'Norway', 'name_ar': 'النرويج'},
-        'dk': {'flag': '🇩🇰', 'code': '+45', 'name': 'Denmark', 'name_ar': 'الدنمارك'},
-        'fi': {'flag': '🇫🇮', 'code': '+358', 'name': 'Finland', 'name_ar': 'فنلندا'},
-        'pl': {'flag': '🇵🇱', 'code': '+48', 'name': 'Poland', 'name_ar': 'بولندا'},
-        'cz': {'flag': '🇨🇿', 'code': '+420', 'name': 'Czech Republic', 'name_ar': 'التشيك'},
-        'hu': {'flag': '🇭🇺', 'code': '+36', 'name': 'Hungary', 'name_ar': 'المجر'},
-        'ro': {'flag': '🇷🇴', 'code': '+40', 'name': 'Romania', 'name_ar': 'رومانيا'},
-        'bg': {'flag': '🇧🇬', 'code': '+359', 'name': 'Bulgaria', 'name_ar': 'بلغاريا'},
-        'gr': {'flag': '🇬🇷', 'code': '+30', 'name': 'Greece', 'name_ar': 'اليونان'},
-        'ie': {'flag': '🇮🇪', 'code': '+353', 'name': 'Ireland', 'name_ar': 'أيرلندا'},
-        'ru': {'flag': '🇷🇺', 'code': '+7', 'name': 'Russia', 'name_ar': 'روسيا'},
-        'ua': {'flag': '🇺🇦', 'code': '+380', 'name': 'Ukraine', 'name_ar': 'أوكرانيا'},
-        'tr': {'flag': '🇹🇷', 'code': '+90', 'name': 'Turkey', 'name_ar': 'تركيا'},
-        
-        # أمريكا الشمالية
-        'us': {'flag': '🇺🇸', 'code': '+1', 'name': 'United States', 'name_ar': 'أمريكا'},
-        'ca': {'flag': '🇨🇦', 'code': '+1', 'name': 'Canada', 'name_ar': 'كندا'},
-        'mx': {'flag': '🇲🇽', 'code': '+52', 'name': 'Mexico', 'name_ar': 'المكسيك'},
-        
-        # أمريكا الجنوبية
-        'br': {'flag': '🇧🇷', 'code': '+55', 'name': 'Brazil', 'name_ar': 'البرازيل'},
-        'ar': {'flag': '🇦🇷', 'code': '+54', 'name': 'Argentina', 'name_ar': 'الأرجنتين'},
-        'cl': {'flag': '🇨🇱', 'code': '+56', 'name': 'Chile', 'name_ar': 'تشيلي'},
-        'co': {'flag': '🇨🇴', 'code': '+57', 'name': 'Colombia', 'name_ar': 'كولومبيا'},
-        'pe': {'flag': '🇵🇪', 'code': '+51', 'name': 'Peru', 'name_ar': 'بيرو'},
-        've': {'flag': '🇻🇪', 'code': '+58', 'name': 'Venezuela', 'name_ar': 'فنزويلا'},
-        'ec': {'flag': '🇪🇨', 'code': '+593', 'name': 'Ecuador', 'name_ar': 'الإكوادور'},
-        'uy': {'flag': '🇺🇾', 'code': '+598', 'name': 'Uruguay', 'name_ar': 'أوروغواي'},
-        'py': {'flag': '🇵🇾', 'code': '+595', 'name': 'Paraguay', 'name_ar': 'باراغواي'},
-        'bo': {'flag': '🇧🇴', 'code': '+591', 'name': 'Bolivia', 'name_ar': 'بوليفيا'},
-        
-        # آسيا
-        'cn': {'flag': '🇨🇳', 'code': '+86', 'name': 'China', 'name_ar': 'الصين'},
-        'jp': {'flag': '🇯🇵', 'code': '+81', 'name': 'Japan', 'name_ar': 'اليابان'},
-        'kr': {'flag': '🇰🇷', 'code': '+82', 'name': 'South Korea', 'name_ar': 'كوريا'},
-        'in': {'flag': '🇮🇳', 'code': '+91', 'name': 'India', 'name_ar': 'الهند'},
-        'pk': {'flag': '🇵🇰', 'code': '+92', 'name': 'Pakistan', 'name_ar': 'باكستان'},
-        'bd': {'flag': '🇧🇩', 'code': '+880', 'name': 'Bangladesh', 'name_ar': 'بنغلاديش'},
-        'id': {'flag': '🇮🇩', 'code': '+62', 'name': 'Indonesia', 'name_ar': 'إندونيسيا'},
-        'my': {'flag': '🇲🇾', 'code': '+60', 'name': 'Malaysia', 'name_ar': 'ماليزيا'},
-        'sg': {'flag': '🇸🇬', 'code': '+65', 'name': 'Singapore', 'name_ar': 'سنغافورة'},
-        'th': {'flag': '🇹🇭', 'code': '+66', 'name': 'Thailand', 'name_ar': 'تايلاند'},
-        'vn': {'flag': '🇻🇳', 'code': '+84', 'name': 'Vietnam', 'name_ar': 'فيتنام'},
-        'ph': {'flag': '🇵🇭', 'code': '+63', 'name': 'Philippines', 'name_ar': 'الفلبين'},
-        'ir': {'flag': '🇮🇷', 'code': '+98', 'name': 'Iran', 'name_ar': 'إيران'},
-        'il': {'flag': '🇮🇱', 'code': '+972', 'name': 'Israel', 'name_ar': 'إسرائيل'},
-        'kz': {'flag': '🇰🇿', 'code': '+7', 'name': 'Kazakhstan', 'name_ar': 'كازاخستان'},
-        'uz': {'flag': '🇺🇿', 'code': '+998', 'name': 'Uzbekistan', 'name_ar': 'أوزبكستان'},
-        'af': {'flag': '🇦🇫', 'code': '+93', 'name': 'Afghanistan', 'name_ar': 'أفغانستان'},
-        
-        # أفريقيا
-        'ng': {'flag': '🇳🇬', 'code': '+234', 'name': 'Nigeria', 'name_ar': 'نيجيريا'},
-        'za': {'flag': '🇿🇦', 'code': '+27', 'name': 'South Africa', 'name_ar': 'جنوب أفريقيا'},
-        'ke': {'flag': '🇰🇪', 'code': '+254', 'name': 'Kenya', 'name_ar': 'كينيا'},
-        'et': {'flag': '🇪🇹', 'code': '+251', 'name': 'Ethiopia', 'name_ar': 'إثيوبيا'},
-        'gh': {'flag': '🇬🇭', 'code': '+233', 'name': 'Ghana', 'name_ar': 'غانا'},
-        'ci': {'flag': '🇨🇮', 'code': '+225', 'name': 'Ivory Coast', 'name_ar': 'ساحل العاج'},
-        'cm': {'flag': '🇨🇲', 'code': '+237', 'name': 'Cameroon', 'name_ar': 'الكاميرون'},
-        'sn': {'flag': '🇸🇳', 'code': '+221', 'name': 'Senegal', 'name_ar': 'السنغال'},
-        'ug': {'flag': '🇺🇬', 'code': '+256', 'name': 'Uganda', 'name_ar': 'أوغندا'},
-        'tz': {'flag': '🇹🇿', 'code': '+255', 'name': 'Tanzania', 'name_ar': 'تنزانيا'},
-        'ao': {'flag': '🇦🇴', 'code': '+244', 'name': 'Angola', 'name_ar': 'أنغولا'},
-        
-        # أوقيانوسيا
-        'au': {'flag': '🇦🇺', 'code': '+61', 'name': 'Australia', 'name_ar': 'أستراليا'},
-        'nz': {'flag': '🇳🇿', 'code': '+64', 'name': 'New Zealand', 'name_ar': 'نيوزيلندا'},
-    }
+    numbers_count = len(numbers)
     
-    def extract_country_info(text):
-        """استخراج الدولة والكود والعلم"""
-        text_lower = text.lower()
-        import re
-        
-        # 1. البحث عن رمز الدولة (#XX)
-        hashtag_match = re.search(r'#([A-Za-z]{2,3})\b', text)
-        if hashtag_match:
-            code = hashtag_match.group(1).lower()
-            if code in COUNTRIES_DB:
-                return COUNTRIES_DB[code]['flag'], COUNTRIES_DB[code]['code'], COUNTRIES_DB[code]['name']
-        
-        # 2. البحث عن اسم الدولة كامل
-        for key, data in COUNTRIES_DB.items():
-            if data['name'].lower() in text_lower or data['name_ar'] in text:
-                return data['flag'], data['code'], data['name']
-        
-        # 3. البحث عن مفتاح الدولة (+XXX)
-        code_match = re.search(r'\+(\d{1,3})\b', text)
-        if code_match:
-            dial_code = '+' + code_match.group(1)
-            for key, data in COUNTRIES_DB.items():
-                if data['code'] == dial_code:
-                    return data['flag'], data['code'], data['name']
-        
-        # 4. البحث عن أعلام موجودة
-        for key, data in COUNTRIES_DB.items():
-            if data['flag'] in text:
-                return data['flag'], data['code'], data['name']
-        
-        return '🌍', '', 'Unknown'
+    if is_client(user_id):
+        cursor.execute('''
+            SELECT nf.display_name, COUNT(*) as count, cn.file_id
+            FROM client_numbers cn
+            LEFT JOIN number_files nf ON cn.file_id = nf.id
+            WHERE cn.client_id = ?
+            GROUP BY nf.display_name, cn.file_id
+        ''', (user_id,))
+    else:
+        cursor.execute('''
+            SELECT nf.display_name, COUNT(*) as count, un.file_id
+            FROM user_numbers un
+            LEFT JOIN number_files nf ON un.file_id = nf.id
+            WHERE un.user_id = ?
+            GROUP BY nf.display_name, un.file_id
+        ''', (user_id,))
+    file_stats_data = cursor.fetchall()
     
-    def extract_phone_number(text):
-        """استخراج رقم الهاتف"""
-        import re
-        patterns = [
-            r'([A-Za-z]?\d{8,15})',
-            r'(\+\d{1,3}[\s.-]?\d{8,15})',
-            r'(\d{2,3}[•*]{2,}\d{3,5})',
-            r'\b(\d{8,15})\b',
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, text)
-            if match:
-                number = match.group(1)
-                if '•' in number or '*' in number:
-                    return number
-                if len(number) > 8:
-                    return number[:4] + '••••' + number[-4:]
-                return number
-        return '—'
+    file_stats = {}
+    total_all_numbers = 0
+    for row in file_stats_data:
+        file_name = row[0] or t['unknown']
+        count = row[1]
+        file_id = row[2]
+        file_stats[file_name] = {'count': count, 'file_id': file_id}
+        total_all_numbers += count
     
-    def extract_cli_info(text):
-        """استخراج CLI"""
-        text_lower = text.lower()
-        cli_map = {
-            'whatsapp': '📱 WhatsApp', 'واتساب': '📱 WhatsApp', 'واتس': '📱 WhatsApp',
-            'telegram': '✈️ Telegram', 'تيليجرام': '✈️ Telegram',
-            'viber': '📞 Viber', 'فايبر': '📞 Viber',
-            'signal': '🔒 Signal',
-            'tinder': '🔥 Tinder',
-            'tiktok': '🎵 TikTok',
-            'google': '𝐆 Google',
-            'facebook': '𝐟 Facebook',
-            'instagram': '📷 Instagram',
-            'snapchat': '👻 Snapchat',
-            'twitter': '🐦 X', 'x.com': '🐦 X',
-            'binance': '₿ Binance', 'binance': '₿ Binance',
-            'paypal': '💰 PayPal',
-            'amazon': '📦 Amazon',
-            'netflix': '🎬 Netflix',
-            'uber': '🚗 Uber',
-            'code': '🔐 OTP', 'otp': '🔐 OTP', 'verify': '🔐 OTP', 'رمز': '🔐 OTP', 'كود': '🔐 OTP',
-        }
-        for key, value in cli_map.items():
-            if key in text_lower:
-                return value
-        return '📨 SMS'
-    
-    def extract_clean_message(text, flag, country_code, number):
-        """استخراج الرسالة النظيفة"""
-        import re
-        clean = text
-        if flag != '🌍':
-            clean = clean.replace(flag, '')
-        clean = re.sub(r'#[A-Z]{2,3}\s*', '', clean)
-        if number != '—':
-            clean = clean.replace(number.replace('•', '•'), '')
-        clean = re.sub(r'\+\d{1,3}\s*', '', clean)
-        clean = re.sub(r'\s+', ' ', clean).strip()
-        
-        # استخراج الكود
-        code = extract_otp_from_message(text)
-        if code:
-            return f'{clean[:50]}... <span style="background: #9d4edd; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; margin-right: 5px;">🔐 {code}</span>' if len(clean) > 50 else f'{clean} <span style="background: #9d4edd; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; margin-right: 5px;">🔐 {code}</span>'
-        
-        return clean[:80] + '...' if len(clean) > 80 else clean
-    
-    # تجهيز الصفوف
     rows = ''
-    total_payout = 0
-    for m in messages:
-        text = m[0]
-        msg_date = m[1][:19] if m[1] else ''
-        
-        flag, dial_code, country_name = extract_country_info(text)
-        number = extract_phone_number(text)
-        cli = extract_cli_info(text)
-        message = extract_clean_message(text, flag, dial_code, number)
-        payout = 0.01
-        total_payout += payout
-        
-        # اختيار الاسم حسب اللغة
-        display_name = country_name
-        if lang == 'ar':
-            for key, data in COUNTRIES_DB.items():
-                if data['name'] == country_name:
-                    display_name = data['name_ar']
-                    break
-        
+    for n in numbers:
         rows += f'''
             <tr>
-                <td style="white-space: nowrap;">{msg_date}</td>
-                <td style="white-space: nowrap;">
-                    <span style="display: flex; align-items: center; gap: 8px;">
-                        <span style="font-size: 1.4rem;">{flag}</span>
-                        <span style="font-weight: 500;">{display_name}</span>
-                    </span>
-                </td>
-                <td style="direction: ltr; font-family: 'Courier New', monospace;">{number}</td>
-                <td><span class="cli-badge">{cli}</span></td>
-                <td style="max-width: 400px;">{message}</td>
-                <td style="color: #2cc185; font-weight: 600;">$ {payout:.2f}</td>
+                <td style="direction: ltr; font-family: monospace; font-size: 1.1rem;">{n[0]}</td>
+                <td><span style="display: flex; align-items: center; gap: 5px;"><i class="fas fa-folder" style="color: #9d4edd;"></i>{n[1] or t['unknown']}</span></td>
+                <td style="white-space: nowrap;">{n[2][:16] if n[2] else ''}</td>
             </tr>
         '''
     
-    # تجهيز رسالة "لا توجد رسائل"
-    empty_message = '''
-    <tr>
-        <td colspan="6" style="text-align: center; padding: 50px;">
-            <i class="far fa-comment-dots" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>
-            <span style="color: #8b6baf;">No messages found</span>
-        </td>
-    </tr>
-    '''
+    files_summary = ''
+    for file_name, stats in file_stats.items():
+        files_summary += f'''
+            <div class="stat-card" style="text-align: center; cursor: pointer;" onclick="window.location.href='/user/my-number?file={file_name}'">
+                <i class="fas fa-folder" style="font-size: 1.5rem; color: #9d4edd; margin-bottom: 8px;"></i>
+                <h4 style="margin: 5px 0;">{file_name}</h4>
+                <div class="number" style="font-size: 1.5rem;">{stats['count']}</div>
+                <small>رقم</small>
+                <div style="margin-top: 5px;"><span class="badge badge-success">{stats['count']}</span></div>
+            </div>
+        '''
     
-    table_body = rows if rows else empty_message
+    filter_options = '<option value="all">📋 جميع الملفات</option>'
+    for file_name in available_files:
+        selected = 'selected' if file_name == filter_file else ''
+        filter_options += f'<option value="{file_name}" {selected}>📁 {file_name}</option>'
+    
+    page_title = f'أرقام ملف: {filter_file}' if filter_file != 'all' else 'جميع الأرقام'
     
     return f'''
 <!DOCTYPE html>
@@ -2522,297 +4679,123 @@ def user_public_sms_page():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Show Records - {t['app_name']}</title>
+    <title>{t['my_number']} - {t['app_name']}</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style('light')}
+    {get_base_style(theme)}
     <style>
-        * {{ box-sizing: border-box; }}
-        body {{ 
-            background: #f8f9fc; 
-        }}
-        
-        .records-container {{
-            max-width: 100% !important;
-            width: 100% !important;
-            padding: 15px 20px !important;
-            margin: 0 !important;
-        }}
-        
-        .page-header {{
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-            gap: 15px;
-        }}
-        
-        .page-header h1 {{
-            margin: 0;
-            font-size: 1.8rem;
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            color: #4a1d6e;
-        }}
-        
-        .total-badge {{
-            background: #f0e8fa;
-            padding: 6px 15px;
-            border-radius: 30px;
-            font-size: 0.9rem;
-            color: #5a189a;
-            border: 1px solid #d9c2f0;
-        }}
-        
-        .table-wrapper {{
-            overflow-x: auto;
-            border-radius: 16px;
-            background: #ffffff;
-            border: 1px solid #e8e0f0;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.04);
-            margin-bottom: 20px;
-        }}
-        
-        .records-table {{
-            width: 100%;
-            border-collapse: collapse;
-            min-width: 1100px;
-            font-size: 0.9rem;
-        }}
-        
-        .records-table th {{
-            background: #f8f5ff;
-            padding: 14px 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            font-size: 0.8rem;
-            letter-spacing: 0.5px;
-            border-bottom: 2px solid #d9c2f0;
-            white-space: nowrap;
-            color: #5a189a;
-        }}
-        
-        .records-table td {{
-            padding: 12px;
-            border-bottom: 1px solid #f0e8fa;
-            vertical-align: middle;
-            color: #1a1a2e;
-        }}
-        
-        .records-table tr:hover td {{
-            background: #fdfbff;
-        }}
-        
-        .cli-badge {{
-            display: inline-block;
-            padding: 4px 10px;
-            border-radius: 20px;
-            font-size: 0.75rem;
-            font-weight: 600;
-            background: #f0e8fa;
-            color: #5a189a;
-            white-space: nowrap;
-        }}
-        
-        .table-footer {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-top: 15px;
-            flex-wrap: wrap;
-            gap: 15px;
-        }}
-        
-        .total-info {{
-            background: #e8faf1;
-            padding: 10px 20px;
-            border-radius: 30px;
-            border: 1px solid #2cc185;
-            color: #1a1a2e;
-        }}
-        
-        .total-info strong {{
-            color: #2cc185;
-            font-size: 1.3rem;
-            margin: 0 10px;
-        }}
-        
-        .pagination {{
-            display: flex;
-            gap: 5px;
-        }}
-        
-        .pagination button {{
-            padding: 8px 15px;
-            background: #ffffff;
-            border: 1px solid #d9c2f0;
-            border-radius: 8px;
-            color: #4a1d6e;
-            cursor: pointer;
-            font-weight: 500;
-            transition: all 0.2s;
-        }}
-        
-        .pagination button:hover {{
-            background: #9d4edd;
-            color: white;
-            border-color: #9d4edd;
-        }}
-        
-        .action-bar {{
-            display: flex;
-            gap: 10px;
-        }}
-        
-        .btn-success {{
-            background: #2cc185;
-            box-shadow: 0 4px 10px rgba(44, 193, 133, 0.2);
-        }}
-        
-        .btn-success:hover {{
-            background: #25a86f;
-        }}
-        
-        /* تنسيق عرض الأعمدة */
-        .records-table th:nth-child(1) {{ width: 160px; }}
-        .records-table th:nth-child(2) {{ width: 180px; }}
-        .records-table th:nth-child(3) {{ width: 140px; }}
-        .records-table th:nth-child(4) {{ width: 110px; }}
-        .records-table th:nth-child(5) {{ /* Message - auto */ }}
-        .records-table th:nth-child(6) {{ width: 100px; }}
-        
-        .header {{
-            background: #ffffff;
-            border-bottom: 1px solid #e8e0f0;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.02);
-        }}
-        
-        .back-btn {{
-            background: #f8f5ff;
-            color: #5a189a;
-            border: 1px solid #d9c2f0;
-        }}
-        
-        @media (max-width: 768px) {{
-            .records-container {{ padding: 10px !important; }}
-            .page-header {{ flex-direction: column; align-items: flex-start; }}
-        }}
+        .header {{ background: #ffffff; border-bottom: 1px solid #e8e0f0; }}
+        .main-stats {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 25px; }}
+        .main-stat-card {{ background: linear-gradient(135deg, #9d4edd, #7b2cbf); color: white; padding: 20px; border-radius: 20px; text-align: center; }}
+        .main-stat-card h3 {{ color: white; margin-bottom: 10px; font-size: 1rem; }}
+        .main-stat-card .number {{ font-size: 2.5rem; font-weight: bold; }}
+        .files-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 15px; margin: 20px 0; }}
+        .table-wrapper {{ overflow-x: auto; border-radius: 16px; background: #ffffff; border: 1px solid #e8e0f0; max-height: 600px; overflow-y: auto; }}
+        .numbers-table {{ width: 100%; border-collapse: collapse; min-width: 600px; }}
+        .numbers-table th {{ background: #f8f5ff; padding: 14px 15px; font-weight: 600; color: #5a189a; border-bottom: 2px solid #d9c2f0; position: sticky; top: 0; z-index: 10; }}
+        .numbers-table td {{ padding: 12px 15px; border-bottom: 1px solid #f0e8fa; }}
+        .numbers-table tr:hover td {{ background: #fdfbff; }}
+        .action-buttons {{ display: flex; gap: 10px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }}
+        .filter-section {{ display: flex; align-items: center; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; }}
+        .filter-select {{ padding: 10px 15px; border: 1px solid #d9c2f0; border-radius: 10px; background: #ffffff; color: #4a1d6e; font-size: 1rem; cursor: pointer; min-width: 250px; }}
+        .filter-select:focus {{ outline: none; border-color: #9d4edd; }}
+        .filter-badge {{ background: #9d4edd; color: white; padding: 8px 15px; border-radius: 10px; font-size: 0.9rem; }}
+        .reset-filter {{ background: #f0e8fa; color: #5a189a; padding: 8px 15px; border-radius: 10px; text-decoration: none; font-size: 0.9rem; border: 1px solid #d9c2f0; }}
+        .reset-filter:hover {{ background: #9d4edd; color: white; }}
+        .stat-card:hover {{ transform: translateY(-3px); box-shadow: 0 8px 20px rgba(157, 78, 221, 0.15); transition: all 0.2s; }}
     </style>
 </head>
 <body>
     <div class="header">
-        <div style="display: flex; align-items: center; gap: 15px;">
-            <a href="/dashboard" class="back-btn">
-                <i class="fas fa-arrow-right"></i> {t['back']}
-            </a>
-        </div>
-        <div style="display: flex; align-items: center; gap: 10px;">
-            <span id="syncStatus"></span>
-            <span class="total-badge">
-                <i class="far fa-clock"></i> {last_sync_time}
-            </span>
-        </div>
+        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
+        <h1 style="color: #5a189a;">📱 {t['my_number']}</h1>
+        <div></div>
     </div>
     
-    <div class="container records-container">
-        <div class="page-header">
-            <h1>
-                <i class="fas fa-table" style="color: #9d4edd;"></i>
-                Show Records
-            </h1>
-            <div class="action-bar">
-                <button class="btn btn-success" onclick="syncMessages()" id="syncBtn">
-                    <i class="fas fa-cloud-download-alt"></i> Sync
-                </button>
-                <button class="btn" onclick="location.reload()">
-                    <i class="fas fa-redo-alt"></i> Refresh
-                </button>
+    <div class="container" style="max-width: 1400px;">
+        <div class="main-stats">
+            <div class="main-stat-card">
+                <h3><i class="fas fa-database"></i> إجمالي الأرقام</h3>
+                <div class="number">{total_all_numbers}</div>
+            </div>
+            <div class="main-stat-card" style="background: linear-gradient(135deg, #2cc185, #1a9e6a);">
+                <h3><i class="fas fa-folder-open"></i> عدد الملفات</h3>
+                <div class="number">{len(file_stats)}</div>
             </div>
         </div>
         
-        <div class="table-wrapper">
-            <table class="records-table">
-                <thead>
-                    <tr>
-                        <th>Date</th>
-                        <th>Range</th>
-                        <th>Number</th>
-                        <th>CLI</th>
-                        <th>SMS</th>
-                        <th>My Payout</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {table_body}
-                </tbody>
-            </table>
+        <div class="card">
+            <div class="filter-section">
+                <i class="fas fa-filter" style="color: #9d4edd; font-size: 1.2rem;"></i>
+                <span style="font-weight: 500;">فلترة حسب الملف:</span>
+                <select class="filter-select" id="fileFilter" onchange="filterNumbers()">
+                    {filter_options}
+                </select>
+                {f'<span class="filter-badge"><i class="fas fa-folder"></i> {filter_file}</span>' if filter_file != 'all' else ''}
+                {f'<a href="/user/my-number" class="reset-filter"><i class="fas fa-times"></i> إلغاء الفلتر</a>' if filter_file != 'all' else ''}
+            </div>
         </div>
         
-        <div class="table-footer">
-            <div class="total-info">
-                <i class="fas fa-envelope"></i> Total SMS <strong>{len(messages)}</strong>
-                <span style="margin: 0 15px; opacity: 0.5;">|</span>
-                <i class="fas fa-dollar-sign"></i> Total Payout <strong>$ {total_payout:.2f}</strong>
+        <div class="card">
+            <h2 style="display: flex; align-items: center; gap: 10px;">
+                <i class="fas fa-chart-pie"></i> توزيع الأرقام حسب الملفات
+                <span style="font-size: 0.9rem; opacity: 0.7; margin-right: 10px;">(اضغط على أي ملف للفلترة)</span>
+            </h2>
+            <div class="files-grid">
+                {files_summary if files_summary else f'<p>{t["no_files"]}</p>'}
+            </div>
+        </div>
+        
+        <div class="card" style="padding: 0; overflow: hidden;">
+            <div style="padding: 20px; border-bottom: 1px solid #e8e0f0; display: flex; justify-content: space-between; align-items: center;">
+                <h2 style="display: flex; align-items: center; gap: 10px; margin: 0;">
+                    <i class="fas fa-list"></i>
+                    {page_title} ({numbers_count})
+                </h2>
+                {f'<span style="color: #9d4edd;"><i class="fas fa-filter"></i> تمت الفلترة</span>' if filter_file != 'all' else ''}
             </div>
             
-            <div class="pagination">
-                <button><i class="fas fa-angle-double-left"></i> First</button>
-                <button><i class="fas fa-angle-left"></i> Previous</button>
-                <button style="background: #9d4edd; color: white; border-color: #9d4edd;">1</button>
-                <button><i class="fas fa-angle-right"></i> Next</button>
-                <button>Last <i class="fas fa-angle-double-right"></i></button>
+            <div class="table-wrapper" style="border: none; border-radius: 0;">
+                <table class="numbers-table">
+                    <thead>
+                        <tr>
+                            <th><i class="fas fa-phone"></i> {t['phone']}</th>
+                            <th><i class="fas fa-folder"></i> {t['file']}</th>
+                            <th><i class="far fa-calendar"></i> {t['date']}</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows if rows else f'''
+                        <tr>
+                            <td colspan="3" style="text-align: center; padding: 50px;">
+                                <i class="fas fa-phone-slash" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>
+                                <p style="color: #8b6baf;">{t["no_numbers"]}</p>
+                            </td>
+                        </tr>
+                        '''}
+                    </tbody>
+                </table>
             </div>
         </div>
         
-        <div style="text-align: center; margin-top: 15px; color: #8b6baf; font-size: 0.85rem;">
-            Showing 1 to {len(messages)} of {len(messages)} entries
-        </div>
+        {f'''<div class="action-buttons">
+            <a href="/user/add-number" class="btn btn-success"><i class="fas fa-plus"></i> {t['add_number']}</a>
+        </div>''' if not is_client(user_id) else ''}
     </div>
     
     <script>
-        async function syncMessages() {{
-            const btn = document.getElementById('syncBtn');
-            const statusEl = document.getElementById('syncStatus');
-            const originalText = btn.innerHTML;
-            
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...';
-            statusEl.innerHTML = '<span style="color: #fdb44b;"><i class="fas fa-spinner fa-spin"></i> Syncing...</span>';
-            
-            try {{
-                const r = await fetch('/api/sync');
-                const d = await r.json();
-                
-                if (d.success) {{
-                    statusEl.innerHTML = '<span style="color: #2cc185;"><i class="fas fa-check-circle"></i> +' + d.new_messages + ' new</span>';
-                    setTimeout(() => location.reload(), 1500);
-                }} else {{
-                    statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> Error</span>';
-                    btn.disabled = false;
-                    btn.innerHTML = originalText;
-                }}
-            }} catch(e) {{
-                statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> Error</span>';
-                btn.disabled = false;
-                btn.innerHTML = originalText;
+        function filterNumbers() {{
+            const select = document.getElementById('fileFilter');
+            const selectedFile = select.value;
+            if (selectedFile === 'all') {{
+                window.location.href = '/user/my-number';
+            }} else {{
+                window.location.href = '/user/my-number?file=' + encodeURIComponent(selectedFile);
             }}
         }}
-        
-        setInterval(function() {{
-            fetch('/api/sync').then(r => r.json()).then(d => {{
-                if (d.success && d.new_messages > 0) location.reload();
-            }});
-        }}, 30000);
     </script>
 </body>
 </html>
 '''
-
-# ============================================================
-#                      صفحة ربط القنوات
-# ============================================================
-
 @app.route('/user/linking-channels')
 @login_required
 def user_linking_channels_page():
@@ -2856,6 +4839,24 @@ def user_linking_channels_page():
     <title>{t['linking_channels']} - {t['app_name']}</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     {get_base_style(theme)}
+    <style>
+        .info-card {{
+            background: linear-gradient(135deg, #0088cc, #006699);
+            color: white;
+            padding: 20px;
+            border-radius: 20px;
+            margin-bottom: 25px;
+        }}
+        .info-card h3 {{ color: white; margin-bottom: 10px; }}
+        .queue-info {{
+            background: #fdb44b;
+            color: #1a1a2e;
+            padding: 10px 15px;
+            border-radius: 10px;
+            display: inline-block;
+            margin-top: 10px;
+        }}
+    </style>
 </head>
 <body>
     <div class="header">
@@ -2865,14 +4866,16 @@ def user_linking_channels_page():
     </div>
     
     <div class="container">
+        <div class="info-card">
+            <h3><i class="fab fa-telegram"></i> {t['link_channel']}</h3>
+            <p>{t['forwarding_info']}</p>
+            <span class="queue-info">
+                <i class="fas fa-clock"></i> {t['queue_status']}: {queue_size} {t['messages_in_queue']}
+            </span>
+        </div>
+        
         <div class="card">
             <h2><i class="fas fa-link"></i> {t['link_channel']}</h2>
-            <p style="color: #00b894; margin-bottom: 15px;">
-                <i class="fas fa-info-circle"></i> {t['forwarding_info']}
-            </p>
-            <p style="color: #fdcb6e; margin-bottom: 15px;">
-                <i class="fas fa-clock"></i> {t['queue_status']}: {queue_size} {t['messages_in_queue']}
-            </p>
             <form action="/user/linking-channels/add" method="POST">
                 <label>📱 {t['channel_id']}:</label>
                 <input type="text" name="channel_id" placeholder="{t['channel_id_placeholder']}" required>
@@ -2897,9 +4900,7 @@ def user_linking_channels_page():
                         <th>{t['actions']}</th>
                     </tr>
                 </thead>
-                <tbody>
-                    {channels_html}
-                </tbody>
+                <tbody>{channels_html}</tbody>
             </table>
         </div>
     </div>
@@ -2953,188 +4954,6 @@ def delete_linked_channel(channel_id):
     log_activity(user_id, 'unlink_channel', f'Unlinked channel ID: {channel_id}')
     
     return redirect('/user/linking-channels')
-
-# ============================================================
-#                      صفحة الملف الشخصي
-# ============================================================
-
-@app.route('/profile')
-@login_required
-def profile_page():
-    user_id = session['user_id']
-    lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
-    
-    cursor = db_conn.cursor()
-    cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
-    user = cursor.fetchone()
-    
-    user_theme = user[6] if len(user) > 6 and user[6] else 'dark'
-    user_lang = user[7] if len(user) > 7 and user[7] else 'ar'
-    user_whatsapp = user[3] if len(user) > 3 else ''
-    user_email = user[4] if len(user) > 4 else ''
-    user_created = user[10] if len(user) > 10 else None
-    user_last_login = user[11] if len(user) > 11 else None
-    
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['profile']} - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
-</head>
-<body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>👤 {t['profile']}</h1>
-        <div></div>
-    </div>
-    
-    <div class="container">
-        <div class="card">
-            <h2>{t['account_info']}</h2>
-            <form action="/profile/update" method="POST">
-                <label>👤 {t['username']}:</label>
-                <input type="text" value="{user[1]}" readonly style="background: rgba(0,0,0,0.5);">
-                
-                <label>🔐 {t['password']}:</label>
-                <input type="password" name="password" placeholder="{t['leave_empty']}">
-                
-                <label>📱 {t['whatsapp']}:</label>
-                <input type="text" name="whatsapp" value="{user_whatsapp}" placeholder="{t['whatsapp']}">
-                
-                <label>📧 {t['email']}:</label>
-                <input type="email" name="email" value="{user_email}" placeholder="Email">
-                
-                <label>🌐 {t['language']}:</label>
-                <select name="language">
-                    <option value="ar" {"selected" if user_lang == 'ar' else ""}>🇪🇬 العربية</option>
-                    <option value="en" {"selected" if user_lang == 'en' else ""}>🇬🇧 English</option>
-                </select>
-                
-                <label>🎨 {t['theme']}:</label>
-                <select name="theme">
-                    <option value="dark" {"selected" if user_theme == 'dark' else ""}>🌙 {t['dark_mode']}</option>
-                    <option value="light" {"selected" if user_theme == 'light' else ""}>☀️ {t['light_mode']}</option>
-                </select>
-                
-                <button type="submit" class="btn btn-success">{t['save']}</button>
-            </form>
-        </div>
-        
-        <div class="card">
-            <h2>📊 {t['stats']}</h2>
-            <p>📱 {t['numbers']}: {get_user_numbers_count(user_id)}</p>
-            <p>📅 {t['registration_date']}: {user_created[:10] if user_created else t['unknown']}</p>
-            <p>🕐 {t['last_login']}: {user_last_login[:16] if user_last_login else t['unknown']}</p>
-        </div>
-    </div>
-</body>
-</html>
-'''
-
-@app.route('/profile/update', methods=['POST'])
-@login_required
-def update_profile():
-    user_id = session['user_id']
-    password = request.form.get('password')
-    whatsapp = request.form.get('whatsapp')
-    email = request.form.get('email')
-    language = request.form.get('language', 'ar')
-    theme = request.form.get('theme', 'dark')
-    
-    cursor = db_conn.cursor()
-    
-    if password:
-        cursor.execute('UPDATE users SET password = ? WHERE id = ?', (hash_password(password), user_id))
-    
-    try:
-        cursor.execute('''
-            UPDATE users SET whatsapp = ?, email = ?, language = ?, theme = ?
-            WHERE id = ?
-        ''', (whatsapp, email, language, theme, user_id))
-        db_conn.commit()
-    except:
-        pass
-    
-    session['lang'] = language
-    session['theme'] = theme
-    
-    log_activity(user_id, 'update_profile', 'Updated profile')
-    
-    return redirect('/profile')
-
-# ============================================================
-#                      صفحة الإشعارات
-# ============================================================
-
-@app.route('/notifications')
-@login_required
-def notifications_page():
-    user_id = session['user_id']
-    lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
-    
-    cursor = db_conn.cursor()
-    cursor.execute('''
-        SELECT id, title, message, type, created_at, is_read
-        FROM notifications
-        WHERE user_id = ?
-        ORDER BY created_at DESC
-        LIMIT 50
-    ''', (user_id,))
-    notifications = cursor.fetchall()
-    
-    cursor.execute('UPDATE notifications SET is_read = 1 WHERE user_id = ?', (user_id,))
-    db_conn.commit()
-    
-    notif_html = ''
-    for n in notifications:
-        icon = {'otp': '🔐', 'info': 'ℹ️', 'success': '✅', 'warning': '⚠️'}.get(n[3], '🔔')
-        notif_html += f'''
-            <div class="card" style="margin-bottom: 10px; {'opacity: 0.7;' if n[5] else ''}">
-                <h3>{icon} {n[1]}</h3>
-                <p>{n[2]}</p>
-                <small>{n[4][:16]}</small>
-            </div>
-        '''
-    
-    if not notif_html:
-        notif_html = f'<div class="card"><p>{t["no_messages"]}</p></div>'
-    
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['notifications']} - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
-</head>
-<body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>🔔 {t['notifications']}</h1>
-        <div></div>
-    </div>
-    
-    <div class="container">
-        {notif_html}
-    </div>
-</body>
-</html>
-'''
-
-# ============================================================
-#                      نظام المراسلة
-# ============================================================
-
 @app.route('/support')
 @login_required
 def support_page():
@@ -3142,13 +4961,13 @@ def support_page():
     lang = session.get('lang', 'ar')
     t = LANGUAGES[lang]
     theme = session.get('theme', 'dark')
-    is_owner = session.get('username') == OWNER_USERNAME
+    is_owner_or_admin = session.get('role') in ['owner', 'admin']
     
     cursor = db_conn.cursor()
     
-    if is_owner:
+    if is_owner_or_admin:
         cursor.execute('''
-            SELECT DISTINCT u.id, u.username
+            SELECT DISTINCT u.id, u.username, u.role
             FROM users u
             WHERE u.id != ?
             ORDER BY u.username ASC
@@ -3160,14 +4979,11 @@ def support_page():
             unread = get_unread_messages_count(u[0])
             badge = f' <span class="notification-badge">{unread}</span>' if unread > 0 else ''
             
-            # عرض اسم المالك بشكل مختلف
-            display_name = 'Selva🔥' if u[1] == OWNER_USERNAME else u[1]
-            is_owner_user = u[1] == OWNER_USERNAME
-            owner_badge = ' 👑' if is_owner_user else ''
+            role_icon = {'owner': '👑', 'admin': '👑', 'test': '🧪', 'user': '👤'}.get(u[2], '👤')
             
             users_html += f'''
-                <a href="/support/chat/{u[0]}" class="sidebar-item" style="{'background: rgba(157, 78, 221, 0.3);' if is_owner_user else ''}">
-                    👤 {display_name}{owner_badge}{badge}
+                <a href="/support/chat/{u[0]}" class="sidebar-item">
+                    {role_icon} {u[1]}{badge}
                 </a>
             '''
         
@@ -3180,30 +4996,6 @@ def support_page():
     <title>{t['support']} - {t['app_name']}</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     {get_base_style(theme)}
-    <style>
-        .support-header {{
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            margin-bottom: 20px;
-        }}
-        .owner-card {{
-            background: linear-gradient(135deg, #9d4edd, #c77dff);
-            padding: 20px;
-            border-radius: 15px;
-            color: white;
-            margin-bottom: 20px;
-        }}
-        .owner-card h3 {{
-            color: white;
-            text-shadow: none;
-            margin-bottom: 10px;
-        }}
-        .owner-card .owner-name {{
-            font-size: 1.5rem;
-            font-weight: bold;
-        }}
-    </style>
 </head>
 <body>
     <div class="header">
@@ -3213,14 +5005,6 @@ def support_page():
     </div>
     
     <div class="container">
-        <div class="owner-card">
-            <h3><i class="fas fa-crown"></i> المالك</h3>
-            <div class="owner-name">Selva 🔥</div>
-            <p style="opacity: 0.9; margin-top: 10px;">
-                <i class="fas fa-envelope"></i> mohaymen190@gmail.com
-            </p>
-        </div>
-        
         <div class="card">
             <h2><i class="fas fa-users"></i> {t['user_list']}</h2>
             <div style="margin-top: 20px;">
@@ -3240,19 +5024,10 @@ def support_page():
         
         return f'''
 <!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['support']} - {t['app_name']}</title>
-    {get_base_style(theme)}
-</head>
+<html>
+<head><title>{t['support']}</title>{get_base_style(theme)}</head>
 <body>
-    <div class="container">
-        <div class="card">
-            <p>{t['error']}</p>
-        </div>
-    </div>
+    <div class="container"><div class="card"><p>{t['error']}</p></div></div>
 </body>
 </html>
 '''
@@ -3267,14 +5042,14 @@ def support_chat_page(other_id):
     
     cursor = db_conn.cursor()
     
-    cursor.execute('SELECT username FROM users WHERE id = ?', (other_id,))
+    cursor.execute('SELECT username, role FROM users WHERE id = ?', (other_id,))
     other = cursor.fetchone()
     
-    # عرض اسم المالك بشكل مختلف
-    if other and other[0] == OWNER_USERNAME:
-        other_name = 'Selva 🔥'
+    if other:
+        role_icon = {'owner': '👑', 'admin': '👑', 'test': '🧪', 'user': '👤'}.get(other[1], '👤')
+        other_name = f"{role_icon} {other[0]}"
     else:
-        other_name = other[0] if other else 'Unknown'
+        other_name = 'Unknown'
     
     cursor.execute('''
         UPDATE support_messages SET is_read = 1 
@@ -3295,21 +5070,18 @@ def support_chat_page(other_id):
     messages_html = ''
     for m in messages:
         is_sent = m[2] == user_id
-        # عرض اسم المرسل بشكل مختلف لو كان المالك
-        sender_name = 'Selva 🔥' if m[3] == OWNER_USERNAME else m[3]
         messages_html += f'''
             <div style="
                 max-width: 70%;
                 margin: 10px 0;
                 padding: 12px 16px;
                 border-radius: 20px;
-                background: {'#9d4edd' if is_sent else 'rgba(15, 8, 30, 0.7)'};
-                color: white;
+                background: {'#9d4edd' if is_sent else '#f0e8fa'};
+                color: {'white' if is_sent else '#1a1a2e'};
                 {'margin-right: auto;' if is_sent else 'margin-left: auto;'}
-                border: 1px solid {'#c77dff' if is_sent else '#5a189a'};
             ">
                 <small style="opacity: 0.7; display: block; margin-bottom: 5px;">
-                    <i class="fas fa-user"></i> {sender_name}
+                    <i class="fas fa-user"></i> {m[3]}
                 </small>
                 <p>{m[0]}</p>
                 <small style="opacity: 0.5; display: block; margin-top: 5px;">{m[1][:16]}</small>
@@ -3326,19 +5098,8 @@ def support_chat_page(other_id):
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     {get_base_style(theme)}
     <style>
-        .chat-header {{
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }}
-        .owner-badge {{
-            background: linear-gradient(135deg, #fdcb6e, #f39c12);
-            color: #2d3436;
-            padding: 3px 10px;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            margin-right: 10px;
-        }}
+        .chat-header {{ display: flex; align-items: center; gap: 10px; }}
+        .messages-area {{ display: flex; flex-direction: column; }}
     </style>
 </head>
 <body>
@@ -3346,7 +5107,6 @@ def support_chat_page(other_id):
         <a href="/support" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
         <div class="chat-header">
             <h1>💬 {other_name}</h1>
-            {'<span class="owner-badge"><i class="fas fa-crown"></i> المالك</span>' if other_name == 'Selva 🔥' else ''}
         </div>
         <div></div>
     </div>
@@ -3413,890 +5173,178 @@ def send_support_message():
     add_notification(receiver_id, "💬 رسالة جديدة", f"لديك رسالة جديدة من {session['username']}", "info")
     
     return jsonify({'success': True})
-
+ # ============================================================
+#                      API Routes
 # ============================================================
-#                      سجل النشاطات
-# ============================================================
 
-@app.route('/activity-log')
+@app.route('/api/sync')
+def api_sync():
+    """مزامنة الرسائل من تيليجرام"""
+    global loop
+    try:
+        result = loop.run_until_complete(fetch_and_save_messages())
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/queue/status')
+def api_queue_status():
+    """حالة قائمة الانتظار"""
+    return jsonify({'queue_size': len(message_queue)})
+
+@app.route('/api/linked-channels/count')
+def api_linked_channels_count():
+    """عدد القنوات المرتبطة"""
+    channels = get_all_active_linked_channels()
+    return jsonify({'count': len(channels)})
+
+@app.route('/api/admins/list')
 @owner_required
-def activity_log_page():
-    lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
-    
+def api_admins_list():
+    """قائمة الأدمنز"""
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT username, created_at FROM users WHERE role = "admin" ORDER BY id DESC')
+    admins = [{'username': row[0], 'created_at': row[1]} for row in cursor.fetchall()]
+    return jsonify({'admins': admins})
+
+@app.route('/api/tests/list')
+@owner_required
+def api_tests_list():
+    """قائمة حسابات Test"""
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT username, created_at FROM users WHERE role = "test" ORDER BY id DESC')
+    tests = [{'username': row[0], 'created_at': row[1]} for row in cursor.fetchall()]
+    return jsonify({'tests': tests})
+
+@app.route('/api/users/list')
+@owner_required
+def api_users_list():
+    """قائمة جميع المستخدمين"""
     cursor = db_conn.cursor()
     cursor.execute('''
-        SELECT al.action, al.details, al.created_at, u.username
-        FROM activity_logs al
-        JOIN users u ON al.user_id = u.id
-        ORDER BY al.created_at DESC
-        LIMIT 100
-    ''')
-    logs = cursor.fetchall()
-    
-    rows = ''
-    for l in logs:
-        rows += f'''
-            <tr>
-                <td>{l[3]}</td>
-                <td>{l[0]}</td>
-                <td>{l[1]}</td>
-                <td>{l[2][:16]}</td>
-            </tr>
-        '''
-    
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['activity_log']} - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
-</head>
-<body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>📝 {t['activity_log']}</h1>
-        <button class="btn" onclick="location.reload()">{t['refresh']}</button>
-    </div>
-    
-    <div class="container">
-        <div class="card">
-            <h2>{t['last_100_activities']}</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>{t['user']}</th>
-                        <th>{t['activity']}</th>
-                        <th>{t['details']}</th>
-                        <th>{t['date']}</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {rows if rows else f'<tr><td colspan="4" style="text-align:center;">{t["no_messages"]}</td></tr>'}
-                </tbody>
-            </table>
-        </div>
-    </div>
-</body>
-</html>
-'''
-
-# ============================================================
-#                      صفحات المالك
-# ============================================================
-
-@app.route('/owner/add-file')
-@owner_required
-def owner_add_file_page():
-    lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
-    
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['add_number']} - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
-</head>
-<body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>📁 Add File</h1>
-        <div></div>
-    </div>
-    
-    <div class="container">
-        <div class="card">
-            <h2>{t['upload']} {t['file']}</h2>
-            <form action="/owner/add-file" method="POST" enctype="multipart/form-data">
-                <label>{t['select_file']} (TXT/CSV):</label>
-                <input type="file" name="file" accept=".txt,.csv" required>
-                <label>{t['display_name']}:</label>
-                <input type="text" name="display_name" placeholder="{t['example']}: أرقام قطر" required>
-                <button type="submit" class="btn btn-success">📤 {t['upload']}</button>
-            </form>
-        </div>
-    </div>
-</body>
-</html>
-'''
-
-@app.route('/owner/delete-file')
-@owner_required
-def owner_delete_file_page():
-    lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
-    
-    cursor = db_conn.cursor()
-    cursor.execute('SELECT id, display_name FROM number_files ORDER BY id DESC')
-    files = cursor.fetchall()
-    
-    options = ''
-    for f in files:
-        options += f'<option value="{f[0]}">{f[1]}</option>'
-    
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['delete_file']} - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
-</head>
-<body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>🗑️ Delete File</h1>
-        <div></div>
-    </div>
-    
-    <div class="container">
-        <div class="card">
-            <h2>{t['delete_file']}</h2>
-            <form action="/owner/delete-file" method="POST">
-                <select name="file_id" required>
-                    <option value="">{t['select_file']}</option>
-                    {options}
-                </select>
-                <button type="submit" class="btn btn-danger" onclick="return confirm('{t['confirm_delete']}')">🗑️ {t['delete']}</button>
-            </form>
-        </div>
-    </div>
-</body>
-</html>
-'''
-
-@app.route('/owner/broadcast')
-@owner_required
-def owner_broadcast_page():
-    lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
-    
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['broadcast']} - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
-</head>
-<body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>📢 {t['broadcast']}</h1>
-        <div></div>
-    </div>
-    
-    <div class="container">
-        <div class="card">
-            <h2>{t['send']} {t['messages']} {t['all_users']}</h2>
-            <form action="/owner/broadcast" method="POST">
-                <textarea name="message" rows="5" placeholder="{t['type_message']}" required></textarea>
-                <button type="submit" class="btn btn-success">📨 {t['send']}</button>
-            </form>
-        </div>
-    </div>
-</body>
-</html>
-'''
-
-@app.route('/owner/create-account')
-@owner_required
-def owner_create_account_page():
-    lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
-    
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['register']} - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
-</head>
-<body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>👤 Create Account</h1>
-        <div></div>
-    </div>
-    
-    <div class="container">
-        <div class="card">
-            <h2>{t['register']}</h2>
-            <form action="/owner/create-account" method="POST">
-                <label>{t['username']}:</label>
-                <input type="text" name="username" placeholder="Username" required>
-                <label>{t['password']}:</label>
-                <input type="password" name="password" placeholder="Password" required>
-                <button type="submit" class="btn btn-success">✅ {t['register_btn']}</button>
-            </form>
-        </div>
-    </div>
-</body>
-</html>
-'''
-
-@app.route('/owner/increase-limit')
-@owner_required
-def owner_increase_limit_page():
-    lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
-    
-    cursor = db_conn.cursor()
-    cursor.execute('SELECT id, username, number_limit FROM users WHERE username != ?', (OWNER_USERNAME,))
-    users = cursor.fetchall()
-    
-    options = ''
-    for u in users:
-        limit_val = u[2] if u[2] else 150
-        options += f'<option value="{u[0]}">{u[1]} ({t["current_limit"]}: {limit_val})</option>'
-    
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['increase_limit']} - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
-</head>
-<body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>⬆️ {t['increase_limit']}</h1>
-        <div></div>
-    </div>
-    
-    <div class="container">
-        <div class="card">
-            <h2>{t['increase_limit']}</h2>
-            <form action="/owner/increase-limit" method="POST">
-                <label>{t['choose_user']}:</label>
-                <select name="user_id" required>
-                    <option value="">{t['choose_user']}</option>
-                    {options}
-                </select>
-                <label>{t['additional_numbers']}:</label>
-                <input type="number" name="limit_amount" placeholder="{t['example']}: 50" required>
-                <button type="submit" class="btn btn-success">⬆️ {t['increase_limit']}</button>
-            </form>
-        </div>
-    </div>
-</body>
-</html>
-'''
-
-@app.route('/owner/results')
-@owner_required
-def owner_results_page():
-    lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
-    
-    cursor = db_conn.cursor()
-    cursor.execute('''
-        SELECT u.id, u.username, u.whatsapp, u.is_blocked, u.number_limit,
-               (SELECT COUNT(*) FROM user_numbers WHERE user_id = u.id) as numbers_count
-        FROM users u
-        WHERE u.username != ?
-        ORDER BY u.id DESC
+        SELECT id, username, whatsapp, is_blocked, number_limit, role, created_at
+        FROM users 
+        WHERE username != ?
+        ORDER BY id DESC
     ''', (OWNER_USERNAME,))
-    users = cursor.fetchall()
-    
-    rows = ''
-    for u in users:
-        user_id, username, whatsapp, is_blocked, limit_num, count = u
-        blocked_text = t['active'] if not is_blocked else t['blocked']
-        block_btn = f'<a href="/owner/block/{user_id}" class="btn btn-sm btn-warning">🚫 {t["block"]}</a>' if not is_blocked else f'<a href="/owner/unblock/{user_id}" class="btn btn-sm btn-success">✅ {t["unblock"]}</a>'
-        rows += f'''
-            <tr>
-                <td>{username}</td>
-                <td>{whatsapp or t['unknown']}</td>
-                <td><span class="badge {'badge-danger' if is_blocked else 'badge-success'}">{blocked_text}</span></td>
-                <td>{count}/{limit_num if limit_num else 150}</td>
-                <td>
-                    {block_btn}
-                    <a href="/owner/increase-limit?user_id={user_id}" class="btn btn-sm" style="padding:5px 10px;">⬆️ {t['increase_limit']}</a>
-                </td>
-            </tr>
-        '''
-    
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['results']} - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
-</head>
-<body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>📊 {t['all_users']}</h1>
-        <button class="btn" onclick="location.reload()"><i class="fas fa-sync-alt"></i> {t['refresh']}</button>
-    </div>
-    
-    <div class="container">
-        <div class="card">
-            <h2>{t['user_list']}</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>{t['user']}</th>
-                        <th>{t['whatsapp']}</th>
-                        <th>{t['status']}</th>
-                        <th>{t['numbers']}</th>
-                        <th>{t['actions']}</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {rows if rows else f'<tr><td colspan="5" style="text-align:center;">{t["no_messages"]}</td></tr>'}
-                </tbody>
-            </table>
-        </div>
-    </div>
-</body>
-</html>
-'''
+    users = []
+    for row in cursor.fetchall():
+        cursor.execute('SELECT COUNT(*) FROM user_numbers WHERE user_id = ?', (row[0],))
+        numbers_count = cursor.fetchone()[0]
+        users.append({
+            'id': row[0],
+            'username': row[1],
+            'whatsapp': row[2],
+            'is_blocked': row[3],
+            'number_limit': row[4],
+            'role': row[5],
+            'created_at': row[6],
+            'numbers_count': numbers_count
+        })
+    return jsonify({'users': users})
 
-# ============================================================
-#                      صفحة إنشاء عميل (Cilent)
-# ============================================================
-
-@app.route('/user/client')
+@app.route('/api/stats')
 @login_required
-def user_client_page():
-    if is_client(session['user_id']):
-        return redirect('/dashboard')
-    
-    lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
-    
+def api_stats():
+    """إحصائيات النظام"""
     cursor = db_conn.cursor()
-    cursor.execute('''
-        SELECT id, username, created_at FROM users 
-        WHERE parent_id = ? AND is_client = 1
-        ORDER BY id DESC
-    ''', (session['user_id'],))
-    clients = cursor.fetchall()
     
-    clients_html = ''
-    for c in clients:
-        cursor.execute('SELECT COUNT(*) FROM client_numbers WHERE client_id = ?', (c[0],))
-        count = cursor.fetchone()[0]
-        clients_html += f'''
-            <tr>
-                <td>{c[1]}</td>
-                <td>{count}</td>
-                <td>{c[2][:16] if c[2] else ''}</td>
-            </tr>
-        '''
+    cursor.execute('SELECT COUNT(*) FROM users')
+    total_users = cursor.fetchone()[0]
     
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['client']} - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
-</head>
-<body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>👤 {t['client']}</h1>
-        <div></div>
-    </div>
+    cursor.execute('SELECT COUNT(*) FROM messages')
+    total_messages = cursor.fetchone()[0]
     
-    <div class="container">
-        <div class="card">
-            <h2>{t['create_client']}</h2>
-            <form action="/user/client/create" method="POST">
-                <label>{t['client_username']}:</label>
-                <input type="text" name="username" placeholder="{t['username']}" required>
-                <label>{t['client_password']}:</label>
-                <input type="password" name="password" placeholder="{t['password']}" required>
-                <button type="submit" class="btn btn-success">✅ {t['create_client']}</button>
-            </form>
-        </div>
-        
-        <div class="card">
-            <h2>{t['current_clients']}</h2>
-            <table>
-                <thead>
-                    <tr><th>{t['username']}</th><th>{t['numbers']}</th><th>{t['date']}</th></tr>
-                </thead>
-                <tbody>
-                    {clients_html if clients_html else f'<tr><td colspan="3" style="text-align:center;">{t["no_messages"]}</td></tr>'}
-                </tbody>
-            </table>
-        </div>
-    </div>
-</body>
-</html>
-'''
+    cursor.execute('SELECT COUNT(*) FROM user_numbers')
+    total_numbers = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM linked_channels WHERE is_active = 1')
+    active_channels = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT value FROM stats WHERE key = 'last_sync'")
+    last_sync = cursor.fetchone()
+    last_sync_time = last_sync[0] if last_sync else None
+    
+    return jsonify({
+        'total_users': total_users,
+        'total_messages': total_messages,
+        'total_numbers': total_numbers,
+        'active_channels': active_channels,
+        'queue_size': len(message_queue),
+        'last_sync': last_sync_time
+    })
 
-@app.route('/user/client/create', methods=['POST'])
+@app.route('/api/notifications/unread')
 @login_required
-def create_client():
-    if is_client(session['user_id']):
-        return redirect('/dashboard')
-    
-    username = request.form.get('username')
-    password = request.form.get('password')
-    parent_id = session['user_id']
-    
+def api_unread_notifications():
+    """عدد الإشعارات غير المقروءة"""
+    user_id = session['user_id']
+    count = get_unread_notifications_count(user_id)
+    messages_count = get_unread_messages_count(user_id)
+    return jsonify({
+        'notifications': count,
+        'messages': messages_count,
+        'total': count + messages_count
+    })
+
+@app.route('/api/notifications/read', methods=['POST'])
+@login_required
+def api_mark_notifications_read():
+    """تحديد الإشعارات كمقروءة"""
+    user_id = session['user_id']
     cursor = db_conn.cursor()
-    cursor.execute('SELECT id FROM users WHERE username = ?', (username,))
-    if cursor.fetchone():
-        return redirect('/user/client')
-    
-    cursor.execute('''
-        INSERT INTO users (username, password, parent_id, is_client, number_limit, created_at)
-        VALUES (?, ?, ?, 1, 1000, ?)
-    ''', (username, hash_password(password), parent_id, datetime.now().isoformat()))
+    cursor.execute('UPDATE notifications SET is_read = 1 WHERE user_id = ?', (user_id,))
     db_conn.commit()
-    
-    log_activity(parent_id, 'create_client', f'Created client: {username}')
-    
-    return redirect('/user/client')
+    return jsonify({'success': True})
 
-# ============================================================
-#                      صفحة إضافة أرقام لعميل
-# ============================================================
-
-@app.route('/user/add-number-client')
+@app.route('/api/search/numbers')
 @login_required
-def user_add_number_client_page():
-    if is_client(session['user_id']):
-        return redirect('/dashboard')
-    
+def api_search_numbers():
+    """البحث عن رقم"""
+    query = request.args.get('q', '')
     user_id = session['user_id']
-    lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
-    
-    cursor = db_conn.cursor()
-    
-    cursor.execute('SELECT id, username FROM users WHERE parent_id = ? AND is_client = 1', (user_id,))
-    clients = cursor.fetchall()
-    
-    if not clients:
-        return f'''
-        <!DOCTYPE html>
-        <html>
-        <head><title>{t['add_number_client']}</title>{get_base_style(theme)}</head>
-        <body>
-            <div class="header">
-                <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-                <h1>📱 {t['add_number_client']}</h1>
-                <div></div>
-            </div>
-            <div class="container">
-                <div class="card">
-                    <p>لا يوجد عملاء. قم بإنشاء عميل أولاً من صفحة Cilent</p>
-                    <a href="/user/client" class="btn btn-success">👤 إنشاء عميل</a>
-                </div>
-            </div>
-        </body>
-        </html>
-        '''
-    
-    clients_options = ''.join([f'<option value="{c[0]}">{c[1]}</option>' for c in clients])
-    
-    cursor.execute('''
-        SELECT nf.id, nf.display_name 
-        FROM number_files nf
-        WHERE nf.id NOT IN (
-            SELECT file_id FROM deleted_user_files WHERE user_id = ?
-        )
-        ORDER BY nf.id DESC
-    ''', (user_id,))
-    files = cursor.fetchall()
-    
-    files_options = ''.join([f'<option value="{f[0]}">{f[1]}</option>' for f in files])
-    
-    number_options = [100, 150, 200, 500, 1000, 3000]
-    numbers_html = ''.join([f'<option value="{n}">{n}</option>' for n in number_options])
-    numbers_html += '<option value="all">All</option>'
-    
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['add_number_client']} - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
-</head>
-<body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>📱 {t['add_number_client']}</h1>
-        <div></div>
-    </div>
-    
-    <div class="container">
-        <div class="card">
-            <h2>{t['add_number_client']}</h2>
-            <form action="/user/add-number-client" method="POST">
-                <label>{t['select_client']}:</label>
-                <select name="client_id" required>
-                    <option value="">{t['select_client']}</option>
-                    {clients_options}
-                </select>
-                
-                <label>{t['select_file']}:</label>
-                <select name="file_id" required>
-                    <option value="">{t['select_file']}</option>
-                    {files_options}
-                </select>
-                
-                <label>{t['select_number_total']}:</label>
-                <select name="number_total" required>
-                    {numbers_html}
-                </select>
-                
-                <button type="submit" class="btn btn-success">📱 {t['add_number']}</button>
-            </form>
-        </div>
-    </div>
-</body>
-</html>
-'''
-
-@app.route('/user/add-number-client', methods=['POST'])
-@login_required
-def add_number_client():
-    if is_client(session['user_id']):
-        return redirect('/dashboard')
-    
-    user_id = session['user_id']
-    client_id = request.form.get('client_id')
-    file_id = request.form.get('file_id')
-    number_total = request.form.get('number_total')
-    
-    cursor = db_conn.cursor()
-    
-    cursor.execute('SELECT id FROM users WHERE id = ? AND parent_id = ?', (client_id, user_id))
-    if not cursor.fetchone():
-        return redirect('/dashboard')
-    
-    cursor.execute('SELECT numbers FROM number_files WHERE id = ?', (file_id,))
-    result = cursor.fetchone()
-    
-    if result:
-        numbers = json.loads(result[0])
-        
-        if number_total == 'all':
-            numbers_to_add = numbers
-        else:
-            numbers_to_add = numbers[:int(number_total)]
-        
-        added = 0
-        for num in numbers_to_add:
-            cursor.execute('''
-                INSERT OR IGNORE INTO client_numbers (client_id, file_id, number, added_at, added_by)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (client_id, file_id, num, datetime.now().isoformat(), user_id))
-            if cursor.rowcount > 0:
-                added += 1
-        
-        db_conn.commit()
-        log_activity(user_id, 'add_numbers_client', f'Added {added} numbers to client {client_id}')
-    
-    return redirect('/user/client')
-
-# ============================================================
-#                      صفحة أرقام الاختبار للمستخدم
-# ============================================================
-
-@app.route('/user/test-number')
-@login_required
-def user_test_number_page():
-    if is_client(session['user_id']):
-        return redirect('/dashboard')
-    
-    lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
-    
-    cursor = db_conn.cursor()
-    cursor.execute('''
-        SELECT id, country_name, numbers_count, created_at 
-        FROM test_number_files 
-        ORDER BY id DESC
-    ''')
-    files = cursor.fetchall()
-    
-    files_html = ''
-    for f in files:
-        files_html += f'''
-            <div class="card">
-                <h3>🧪 {f[1]}</h3>
-                <p>{t['numbers_count']}: {f[2]}</p>
-                <p>{t['date']}: {f[3][:16] if f[3] else ''}</p>
-                <a href="/user/test-number/view/{f[0]}" class="btn btn-success">👀 عرض الأرقام</a>
-            </div>
-        '''
-    
-    if not files_html:
-        files_html = f'<div class="card"><p>{t["no_messages"]}</p></div>'
-    
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['test_number']} - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
-</head>
-<body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>🧪 {t['test_number']}</h1>
-        <div></div>
-    </div>
-    
-    <div class="container">
-        <div class="card">
-            <h2>{t['test_number']}</h2>
-        </div>
-        {files_html}
-    </div>
-</body>
-</html>
-'''
-
-@app.route('/user/test-number/view/<int:file_id>')
-@login_required
-def view_test_numbers(file_id):
-    if is_client(session['user_id']):
-        return redirect('/dashboard')
-    
-    lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
-    
-    cursor = db_conn.cursor()
-    cursor.execute('SELECT country_name, numbers FROM test_number_files WHERE id = ?', (file_id,))
-    result = cursor.fetchone()
-    
-    if not result:
-        return redirect('/user/test-number')
-    
-    country_name = result[0]
-    numbers = json.loads(result[1])
-    
-    rows = ''
-    for i, num in enumerate(numbers[:100], 1):
-        rows += f'<tr><td>{i}</td><td>{num}</td></tr>'
-    
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{country_name} - {t['test_number']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
-</head>
-<body>
-    <div class="header">
-        <a href="/user/test-number" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>🧪 {country_name}</h1>
-        <div></div>
-    </div>
-    
-    <div class="container">
-        <div class="card">
-            <h2>{country_name} - {len(numbers)} {t['numbers']}</h2>
-            <table>
-                <thead><tr><th>#</th><th>{t['phone']}</th></tr></thead>
-                <tbody>{rows}</tbody>
-            </table>
-            {f'<p style="margin-top:15px; color:#9d4edd;">و {len(numbers)-100} رقم آخر...</p>' if len(numbers) > 100 else ''}
-        </div>
-    </div>
-</body>
-</html>
-'''
-
-# ============================================================
-#                      صفحة إضافة أرقام اختبار (للمالك)
-# ============================================================
-
-@app.route('/owner/add-number-test')
-@owner_required
-def owner_add_number_test_page():
-    lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
-    
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['add_number_test']} - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
-</head>
-<body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>🧪 {t['add_number_test']}</h1>
-        <div></div>
-    </div>
-    
-    <div class="container">
-        <div class="card">
-            <h2>{t['upload']} {t['test_number']}</h2>
-            <form action="/owner/add-number-test" method="POST" enctype="multipart/form-data">
-                <label>{t['select_file']} (TXT/CSV):</label>
-                <input type="file" name="file" accept=".txt,.csv" required>
-                
-                <label>{t['country_name']}:</label>
-                <input type="text" name="country_name" placeholder="{t['example']}: Qatar" required>
-                
-                <label>{t['numbers_count']}:</label>
-                <input type="number" name="numbers_count" placeholder="{t['example']}: 1000" required>
-                
-                <button type="submit" class="btn btn-success">📤 {t['upload']}</button>
-            </form>
-        </div>
-    </div>
-</body>
-</html>
-'''
-
-@app.route('/owner/add-number-test', methods=['POST'])
-@owner_required
-def owner_add_number_test():
-    if 'file' not in request.files:
-        return redirect('/owner/add-number-test')
-    
-    file = request.files['file']
-    country_name = request.form.get('country_name')
-    numbers_count = request.form.get('numbers_count')
-    
-    if file and allowed_file(file.filename):
-        filename = secure_filename(f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{file.filename}")
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-        
-        numbers = parse_numbers_file(filepath)
-        
-        cursor = db_conn.cursor()
-        cursor.execute('''
-            INSERT INTO test_number_files (file_name, country_name, numbers, numbers_count, created_at)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (filename, country_name, json.dumps(numbers), int(numbers_count), datetime.now().isoformat()))
-        db_conn.commit()
-        
-        log_activity(session['user_id'], 'add_test_numbers', f'Added test numbers: {country_name} ({len(numbers)} numbers)')
-    
-    return redirect('/dashboard')
-
-# ============================================================
-#                      صفحة رسائل أرقام العميل
-# ============================================================
-
-@app.route('/user/my-sms-number')
-@login_required
-def user_my_sms_number_page():
-    user_id = session['user_id']
-    lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = session.get('theme', 'dark')
     
     cursor = db_conn.cursor()
     
     if is_client(user_id):
         cursor.execute('''
-            SELECT cn.number, uc.code, uc.received_at
-            FROM client_numbers cn
-            LEFT JOIN user_codes uc ON cn.number LIKE '%' || substr(uc.number, -4)
-            WHERE cn.client_id = ?
-            ORDER BY uc.received_at DESC
-            LIMIT 100
-        ''', (user_id,))
+            SELECT number FROM client_numbers 
+            WHERE client_id = ? AND number LIKE ?
+            LIMIT 50
+        ''', (user_id, f'%{query}%'))
     else:
         cursor.execute('''
-            SELECT number, code, received_at
-            FROM user_codes
-            WHERE user_id = ?
-            ORDER BY received_at DESC
-            LIMIT 100
-        ''', (user_id,))
+            SELECT number FROM user_numbers 
+            WHERE user_id = ? AND number LIKE ?
+            LIMIT 50
+        ''', (user_id, f'%{query}%'))
     
-    codes = cursor.fetchall()
+    numbers = [row[0] for row in cursor.fetchall()]
+    return jsonify({'numbers': numbers})
+
+@app.route('/health')
+def health():
+    """فحص صحة النظام"""
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM messages')
+    msg_count = cursor.fetchone()[0]
+    channels_count = len(get_all_active_linked_channels())
     
-    rows = ''
-    for c in codes:
-        rows += f'<tr><td>{c[0] or t["unknown"]}</td><td><strong>{c[1]}</strong></td><td>{c[2][:16] if c[2] else ""}</td></tr>'
+    # فحص اتصال تيليجرام
+    telegram_status = 'connected' if user_client and user_client.is_connected() else 'disconnected'
+    bot_status = 'connected' if bot_client and bot_client.is_connected() else 'disconnected'
     
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['my_sms']} - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
-</head>
-<body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1>💬 {t['my_sms']}</h1>
-        <div></div>
-    </div>
-    
-    <div class="container">
-        <div class="card">
-            <h2>{t['your_codes']}</h2>
-            <table>
-                <thead><tr><th>{t['phone']}</th><th>{t['code']}</th><th>{t['date']}</th></tr></thead>
-                <tbody>{rows if rows else f'<tr><td colspan="3" style="text-align:center;">{t["no_messages"]}</td></tr>'}</tbody>
-            </table>
-        </div>
-    </div>
-</body>
-</html>
-'''
+    return jsonify({
+        'status': 'ok',
+        'messages': msg_count,
+        'linked_channels': channels_count,
+        'queue_size': len(message_queue),
+        'telegram': telegram_status,
+        'bot': bot_status
+    })
 
 # ============================================================
-#                           المسارات
+#                      المسارات الأساسية
 # ============================================================
 
 @app.route('/')
@@ -4339,6 +5387,13 @@ def login():
             session['username'] = user[1]
             session['lang'] = user[7] if len(user) > 7 and user[7] else 'ar'
             session['theme'] = user[6] if len(user) > 6 and user[6] else 'dark'
+            
+            if len(user) > 14 and user[14]:
+                session['role'] = user[14]
+            elif user[1] == OWNER_USERNAME:
+                session['role'] = 'owner'
+            else:
+                session['role'] = 'user'
             
             try:
                 cursor.execute('UPDATE users SET last_login = ? WHERE id = ?', 
@@ -4402,267 +5457,52 @@ def logout():
     return redirect('/login')
 
 # ============================================================
-#                      مسارات المالك (POST)
+#                      معالجة الأخطاء
 # ============================================================
 
-@app.route('/owner/add-file', methods=['POST'])
-@owner_required
-def owner_add_file():
-    if 'file' not in request.files:
-        return redirect('/owner/add-file')
-    
-    file = request.files['file']
-    display_name = request.form.get('display_name')
-    
-    if file and allowed_file(file.filename):
-        filename = secure_filename(f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{file.filename}")
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-        
-        numbers = parse_numbers_file(filepath)
-        
-        cursor = db_conn.cursor()
-        cursor.execute('''
-            INSERT INTO number_files (file_name, display_name, numbers, created_at)
-            VALUES (?, ?, ?, ?)
-        ''', (filename, display_name, json.dumps(numbers), datetime.now().isoformat()))
-        db_conn.commit()
-        
-        log_activity(session['user_id'], 'add_file', f'Added file: {display_name} ({len(numbers)} numbers)')
-    
-    return redirect('/dashboard')
+@app.errorhandler(404)
+def page_not_found(e):
+    lang = session.get('lang', 'ar')
+    t = LANGUAGES[lang]
+    return f'''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>404 - {t['app_name']}</title>
+    {get_base_style('light')}
+</head>
+<body>
+    <div class="container" style="text-align: center; padding: 100px 20px;">
+        <i class="fas fa-map-signs" style="font-size: 5rem; color: #d9c2f0; margin-bottom: 20px;"></i>
+        <h1 style="font-size: 3rem; color: #5a189a;">404</h1>
+        <p style="font-size: 1.2rem; margin-bottom: 30px;">الصفحة غير موجودة</p>
+        <a href="/dashboard" class="btn">العودة للوحة التحكم</a>
+    </div>
+</body>
+</html>
+'''
 
-@app.route('/owner/delete-file', methods=['POST'])
-@owner_required
-def owner_delete_file():
-    file_id = request.form.get('file_id')
-    cursor = db_conn.cursor()
-    cursor.execute('DELETE FROM number_files WHERE id = ?', (file_id,))
-    cursor.execute('DELETE FROM user_numbers WHERE file_id = ?', (file_id,))
-    db_conn.commit()
-    
-    log_activity(session['user_id'], 'delete_file', f'Deleted file ID: {file_id}')
-    
-    return redirect('/dashboard')
-
-@app.route('/owner/broadcast', methods=['POST'])
-@owner_required
-def owner_broadcast():
-    message = request.form.get('message')
-    cursor = db_conn.cursor()
-    cursor.execute('SELECT id FROM users WHERE username != ? AND is_blocked = 0', (OWNER_USERNAME,))
-    users = cursor.fetchall()
-    
-    cursor.execute('''
-        INSERT INTO broadcasts (message, sent_at, recipients_count)
-        VALUES (?, ?, ?)
-    ''', (message, datetime.now().isoformat(), len(users)))
-    db_conn.commit()
-    
-    for u in users:
-        add_notification(u[0], "📢 بث", message, "info")
-    
-    log_activity(session['user_id'], 'broadcast', f'Sent broadcast to {len(users)} users')
-    
-    return redirect('/dashboard')
-
-@app.route('/owner/create-account', methods=['POST'])
-@owner_required
-def owner_create_account():
-    username = request.form.get('username')
-    password = request.form.get('password')
-    
-    cursor = db_conn.cursor()
-    cursor.execute('SELECT id FROM users WHERE username = ?', (username,))
-    if cursor.fetchone():
-        return redirect('/owner/create-account')
-    
-    cursor.execute('''
-        INSERT INTO users (username, password, created_at)
-        VALUES (?, ?, ?)
-    ''', (username, hash_password(password), datetime.now().isoformat()))
-    db_conn.commit()
-    
-    log_activity(session['user_id'], 'create_account', f'Created account: {username}')
-    
-    return redirect('/dashboard')
-
-@app.route('/owner/increase-limit', methods=['POST'])
-@owner_required
-def owner_increase_limit():
-    user_id = request.form.get('user_id')
-    amount = int(request.form.get('limit_amount', 0))
-    
-    cursor = db_conn.cursor()
-    cursor.execute('UPDATE users SET number_limit = number_limit + ? WHERE id = ?', (amount, user_id))
-    db_conn.commit()
-    
-    log_activity(session['user_id'], 'increase_limit', f'Increased limit for user {user_id} by {amount}')
-    
-    return redirect('/dashboard')
-
-@app.route('/owner/block/<int:user_id>')
-@owner_required
-def owner_block_user(user_id):
-    cursor = db_conn.cursor()
-    cursor.execute('UPDATE users SET is_blocked = 1 WHERE id = ?', (user_id,))
-    db_conn.commit()
-    
-    add_notification(user_id, "🚫 حظر", "تم حظر حسابك. تواصل مع الدعم الفني.", "warning")
-    log_activity(session['user_id'], 'block_user', f'Blocked user {user_id}')
-    
-    return redirect('/owner/results')
-
-@app.route('/owner/unblock/<int:user_id>')
-@owner_required
-def owner_unblock_user(user_id):
-    cursor = db_conn.cursor()
-    cursor.execute('UPDATE users SET is_blocked = 0 WHERE id = ?', (user_id,))
-    db_conn.commit()
-    
-    add_notification(user_id, "✅ فك الحظر", "تم فك الحظر عن حسابك.", "success")
-    log_activity(session['user_id'], 'unblock_user', f'Unblocked user {user_id}')
-    
-    return redirect('/owner/results')
-
-# ============================================================
-#                      مسارات المستخدم (POST)
-# ============================================================
-
-@app.route('/user/add-numbers/<int:file_id>')
-@login_required
-def user_add_numbers(file_id):
-    if is_client(session['user_id']):
-        return redirect('/dashboard')
-    
-    user_id = session['user_id']
-    
-    cursor = db_conn.cursor()
-    
-    # نحسب كام رقم المستخدم ضاف من الملف ده تحديداً
-    cursor.execute('SELECT COUNT(*) FROM user_numbers WHERE user_id = ? AND file_id = ?', (user_id, file_id))
-    file_count = cursor.fetchone()[0]
-    
-    # الحد الأقصى لكل ملف هو 150 رقم
-    FILE_LIMIT = 150
-    
-    if file_count >= FILE_LIMIT:
-        # المستخدم وصل للحد الأقصى لهذا الملف
-        return redirect('/user/add-number')
-    
-    # جلب الأرقام من الملف
-    cursor.execute('SELECT numbers FROM number_files WHERE id = ?', (file_id,))
-    result = cursor.fetchone()
-    
-    if result:
-        all_numbers = json.loads(result[0])
-        
-        # حساب المساحة المتبقية في هذا الملف
-        remaining_in_file = FILE_LIMIT - file_count
-        
-        # ناخد الأرقام الجديدة (اللي مش مضافة قبل كدا من نفس الملف)
-        numbers_to_add = []
-        
-        for num in all_numbers:
-            # التحقق من عدم وجود الرقم مسبقاً للمستخدم من نفس الملف
-            cursor.execute('SELECT id FROM user_numbers WHERE user_id = ? AND file_id = ? AND number = ?', 
-                          (user_id, file_id, num))
-            if not cursor.fetchone():
-                numbers_to_add.append(num)
-                if len(numbers_to_add) >= remaining_in_file:
-                    break
-        
-        added = 0
-        for num in numbers_to_add:
-            cursor.execute('''
-                INSERT INTO user_numbers (user_id, file_id, number, added_at)
-                VALUES (?, ?, ?, ?)
-            ''', (user_id, file_id, num, datetime.now().isoformat()))
-            if cursor.rowcount > 0:
-                added += 1
-        
-        db_conn.commit()
-        log_activity(user_id, 'add_numbers', f'Added {added} numbers from file {file_id}')
-    
-    return redirect('/user/my-number')
-
-@app.route('/user/delete-file', methods=['POST'])
-@login_required
-def user_delete_file():
-    if is_client(session['user_id']):
-        return redirect('/dashboard')
-    
-    file_name = request.form.get('file_name')
-    user_id = session['user_id']
-    
-    cursor = db_conn.cursor()
-    cursor.execute('SELECT id FROM number_files WHERE display_name = ?', (file_name,))
-    file_result = cursor.fetchone()
-    
-    if file_result:
-        file_id = file_result[0]
-        cursor.execute('''
-            INSERT INTO deleted_user_files (user_id, file_id, file_name, deleted_at)
-            VALUES (?, ?, ?, ?)
-        ''', (user_id, file_id, file_name, datetime.now().isoformat()))
-        db_conn.commit()
-        log_activity(user_id, 'delete_file', f'Deleted file: {file_name}')
-    
-    return redirect('/user/my-file')
-
-@app.route('/user/download-file/<int:file_id>')
-@login_required
-def user_download_file(file_id):
-    if is_client(session['user_id']):
-        return redirect('/dashboard')
-    
-    user_id = session['user_id']
-    cursor = db_conn.cursor()
-    cursor.execute('SELECT number FROM user_numbers WHERE user_id = ? AND file_id = ?', (user_id, file_id))
-    numbers = cursor.fetchall()
-    content = '\n'.join([n[0] for n in numbers])
-    response = make_response(content)
-    response.headers['Content-Type'] = 'text/plain'
-    response.headers['Content-Disposition'] = f'attachment; filename=numbers_{file_id}.txt'
-    
-    log_activity(user_id, 'download_file', f'Downloaded file {file_id}')
-    
-    return response
-
-# ============================================================
-#                      API Routes
-# ============================================================
-
-@app.route('/api/sync')
-def api_sync():
-    global loop
-    try:
-        result = loop.run_until_complete(fetch_and_save_messages())
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-@app.route('/api/queue/status')
-def api_queue_status():
-    return jsonify({'queue_size': len(message_queue)})
-
-@app.route('/api/linked-channels/count')
-def api_linked_channels_count():
-    channels = get_all_active_linked_channels()
-    return jsonify({'count': len(channels)})
-
-@app.route('/health')
-def health():
-    cursor = db_conn.cursor()
-    cursor.execute('SELECT COUNT(*) FROM messages')
-    msg_count = cursor.fetchone()[0]
-    channels_count = len(get_all_active_linked_channels())
-    return jsonify({
-        'status': 'ok',
-        'messages': msg_count,
-        'linked_channels': channels_count,
-        'queue_size': len(message_queue)
-    })
+@app.errorhandler(500)
+def internal_error(e):
+    return f'''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>500 - خطأ في السيرفر</title>
+    {get_base_style('light')}
+</head>
+<body>
+    <div class="container" style="text-align: center; padding: 100px 20px;">
+        <i class="fas fa-exclamation-triangle" style="font-size: 5rem; color: #ff5e5e; margin-bottom: 20px;"></i>
+        <h1 style="font-size: 3rem; color: #5a189a;">500</h1>
+        <p style="font-size: 1.2rem; margin-bottom: 30px;">حدث خطأ في السيرفر</p>
+        <a href="/dashboard" class="btn">العودة للوحة التحكم</a>
+    </div>
+</body>
+</html>
+'''
 
 # ============================================================
 #                      التشغيل
@@ -4672,11 +5512,41 @@ def print_banner():
     print('=' * 60)
     print('   SELVA & OTP - Complete Advanced System')
     print('   النسخة النهائية مع Queue للإرسال السريع')
+    print('   نظام الأدوار: Owner, Admin, Test, User, Client')
     print('=' * 60)
+
+def cleanup():
+    """تنظيف الموارد عند الخروج"""
+    global db_conn, loop, user_client, bot_client
+    
+    print('\n🔄 جاري إغلاق الاتصالات...')
+    
+    if db_conn:
+        db_conn.close()
+        print('✅ تم إغلاق قاعدة البيانات')
+    
+    if loop:
+        if user_client:
+            loop.run_until_complete(user_client.disconnect())
+        if bot_client:
+            loop.run_until_complete(bot_client.disconnect())
+        loop.close()
+        print('✅ تم إغلاق اتصالات تيليجرام')
+
+import signal
+
+def signal_handler(sig, frame):
+    print('\n👋 تم استلام إشارة إيقاف...')
+    cleanup()
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 if __name__ == '__main__':
     print_banner()
     
+    # تهيئة تيليجرام
     try:
         init_telegram()
         print('✅ تم الاتصال بتليجرام')
@@ -4687,19 +5557,49 @@ if __name__ == '__main__':
         result = loop.run_until_complete(fetch_and_save_messages())
         if result['success']:
             print(f'✅ تمت المزامنة الأولية: {result["new_messages"]} رسالة')
+        else:
+            print(f'⚠️ فشلت المزامنة الأولية: {result.get("error", "خطأ غير معروف")}')
     except Exception as e:
         print(f'⚠️ تيليجرام غير متاح: {e}')
         print('📱 النظام سيعمل بدون مزامنة تيليجرام')
     
+    # إحصائيات قاعدة البيانات
+    cursor = db_conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM users')
+    users_count = cursor.fetchone()[0]
+    cursor.execute('SELECT COUNT(*) FROM messages')
+    messages_count = cursor.fetchone()[0]
+    cursor.execute('SELECT COUNT(*) FROM number_files')
+    files_count = cursor.fetchone()[0]
+    
+    print('=' * 60)
+    print('📊 إحصائيات النظام:')
+    print(f'   👥 عدد المستخدمين: {users_count}')
+    print(f'   💬 عدد الرسائل: {messages_count}')
+    print(f'   📁 عدد الملفات: {files_count}')
+    print('=' * 60)
+    
+    # تشغيل السيرفر
     try:
         port = 5000
-        print(f'  🚀 http://127.0.0.1:{port}')
-        print(f'  👑 المالك: {OWNER_USERNAME} / {OWNER_PASSWORD}')
-        print(f'  🤖 البوت: {BOT_TOKEN[:20]}...')
+        print(f'\n🌐 السيرفر يعمل على:')
+        print(f'   🚀 http://127.0.0.1:{port}')
+        print(f'   🚀 http://localhost:{port}')
+        print(f'\n👑 بيانات المالك:')
+        print(f'   👤 المستخدم: {OWNER_USERNAME}')
+        print(f'   🔐 كلمة المرور: {OWNER_PASSWORD}')
+        print(f'\n🤖 بيانات البوت:')
+        print(f'   🤖 Token: {BOT_TOKEN[:20]}...')
+        print('\n' + '=' * 60)
+        print('اضغط CTRL+C لإيقاف السيرفر')
+        print('=' * 60 + '\n')
+        
         app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
     except KeyboardInterrupt:
-        print('\n👋 تم إيقاف السيرفر')
-        db_conn.close()
-        if loop:
-            loop.close()
+        pass
+    except Exception as e:
+        print(f'\n❌ خطأ في تشغيل السيرفر: {e}')
+    finally:
+        cleanup()
+        print('\n👋 تم إيقاف السيرفر بنجاح')
         sys.exit(0)
