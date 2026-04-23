@@ -4706,6 +4706,21 @@ def user_my_number_page():
     
     page_title = f'أرقام ملف: {filter_file}' if filter_file != 'all' else 'جميع الأرقام'
     
+    # ============================================================
+    # المتغيرات المساعدة (لتجنب f-string متعدد الأسطر)
+    # ============================================================
+    
+    empty_numbers_row = f'''<tr>
+                            <td colspan="3" style="text-align: center; padding: 50px;">
+                                <i class="fas fa-phone-slash" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>
+                                <p style="color: #8b6baf;">{t["no_numbers"]}</p>
+                            </td>
+                        </tr>'''
+    
+    add_number_button = f'''<div class="action-buttons">
+            <a href="/user/add-number" class="btn btn-success"><i class="fas fa-plus"></i> {t['add_number']}</a>
+        </div>'''
+    
     return f'''
 <!DOCTYPE html>
 <html dir="{'rtl' if lang == 'ar' else 'ltr'}">
@@ -4797,22 +4812,13 @@ def user_my_number_page():
                         </tr>
                     </thead>
                     <tbody>
-                        {rows if rows else f'''
-                        <tr>
-                            <td colspan="3" style="text-align: center; padding: 50px;">
-                                <i class="fas fa-phone-slash" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>
-                                <p style="color: #8b6baf;">{t["no_numbers"]}</p>
-                            </td>
-                        </tr>
-                        '''}
+                        {rows if rows else empty_numbers_row}
                     </tbody>
                 </table>
             </div>
         </div>
         
-        {f'''<div class="action-buttons">
-            <a href="/user/add-number" class="btn btn-success"><i class="fas fa-plus"></i> {t['add_number']}</a>
-        </div>''' if not is_client(user_id) else ''}
+        {add_number_button if not is_client(user_id) else ''}
     </div>
     
     <script>
