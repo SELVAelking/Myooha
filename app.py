@@ -740,7 +740,7 @@ def init_telegram():
             start_forwarding_worker()
         
         start_message_listener()
-        start_auto_sync()  # ← إضافة هذا السطر
+        start_selva_sync()  # ← إضافة هذا السطر
         print('🔔 تم تفعيل مراقبة الرسائل الجديدة والمزامنة التلقائية')
 
 async def fetch_and_save_messages():
@@ -2064,268 +2064,496 @@ def user_my_sms_page():
     
     user_id = session['user_id']
     lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = 'light'
     
     cursor = db_conn.cursor()
+    
+    # نجيب الكودات مع اسم الملف المرتبط بكل رقم
     cursor.execute('''
-        SELECT number, code, received_at
-        FROM user_codes
-        WHERE user_id = ?
-        ORDER BY received_at DESC
+        SELECT uc.number, uc.code, uc.received_at, nf.display_name
+        FROM user_codes uc
+        LEFT JOIN user_numbers un ON uc.number = un.number AND un.user_id = ?
+        LEFT JOIN number_files nf ON un.file_id = nf.id
+        WHERE uc.user_id = ?
+        ORDER BY uc.received_at DESC
         LIMIT 100
-    ''', (user_id,))
+    ''', (user_id, user_id))
     codes = cursor.fetchall()
     
+    # لو رجع فاضي (للعملاء مثلاً) نجرب client_numbers
+    if not codes and is_client(user_id):
+        cursor.execute('''
+            SELECT uc.number, uc.code, uc.received_at, nf.display_name
+            FROM user_codes uc
+            LEFT JOIN client_numbers cn ON uc.number = cn.number AND cn.client_id = ?
+            LEFT JOIN number_files nf ON cn.file_id = nf.id
+            WHERE uc.user_id = ?
+            ORDER BY uc.received_at DESC
+            LIMIT 100
+        ''', (user_id, user_id))
+        codes = cursor.fetchall()
+    
+    # لو لسه فاضي نجيب الكودات بدون اسم ملف
+    if not codes:
+        cursor.execute('''
+            SELECT number, code, received_at, NULL
+            FROM user_codes
+            WHERE user_id = ?
+            ORDER BY received_at DESC
+            LIMIT 100
+        ''', (user_id,))
+        codes = cursor.fetchall()
+    
+    # تجهيز صفوف الجدول
     rows = ''
+    total_payout = 0
     for c in codes:
-        number = c[0] if c[0] else t['unknown']
+        number = c[0] if c[0] else 'Unknown'
         code_text = c[1] if c[1] else ''
-        date_text = c[2][:16] if c[2] else ''
+        date_text = c[2][:19] if c[2] else ''
+        file_name = c[3] if c[3] else 'SMS'  # اسم الملف أو SMS كقيمة افتراضية
+        payout = 0.01
+        total_payout += payout
+        
+        # استخراج CLI من الكود
+        cli = 'SMS'
+        cli_lower = code_text.lower()
+        if 'whatsapp' in cli_lower or 'واتساب' in cli_lower:
+            cli = 'WhatsApp'
+        elif 'telegram' in cli_lower or 'تيليجرام' in cli_lower:
+            cli = 'Telegram'
+        elif 'google' in cli_lower:
+            cli = 'Google'
+        elif 'facebook' in cli_lower:
+            cli = 'Facebook'
+        elif 'instagram' in cli_lower:
+            cli = 'Instagram'
+        elif 'snapchat' in cli_lower:
+            cli = 'Snapchat'
+        elif 'tiktok' in cli_lower:
+            cli = 'TikTok'
+        elif 'binance' in cli_lower:
+            cli = 'Binance'
+        elif 'paypal' in cli_lower:
+            cli = 'PayPal'
+        elif 'amazon' in cli_lower:
+            cli = 'Amazon'
+        elif 'otp' in cli_lower or 'code' in cli_lower or 'verify' in cli_lower or 'كود' in cli_lower or 'رمز' in cli_lower:
+            cli = 'OTP'
         
         rows += f'''
             <tr>
-                <td style="direction: ltr; font-family: monospace; font-size: 1.1rem;">{number}</td>
-                <td><strong style="color: #9d4edd;">{code_text}</strong></td>
-                <td>{date_text}</td>
+                <td class="date-cell">{date_text}</td>
+                <td class="range-cell">{file_name}</td>
+                <td>{number}</td>
+                <td>{cli}</td>
+                <td>{code_text[:80] if code_text else ''}</td>
+                <td>1</td>
+                <td class="currency-cell">$</td>
+                <td class="payout-cell">{payout:.2f}</td>
             </tr>
         '''
     
     if not rows:
-        rows = f'<tr><td colspan="3" style="text-align:center; padding: 40px;"><i class="fas fa-inbox" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>{t["no_codes"]}</td></tr>'
+        rows = f'<tr><td colspan="8" style="text-align: center; padding: 40px; color: #666;">لا توجد رسائل بعد</td></tr>'
+    
+    summary_row = f'''
+        <tr class="summary-row">
+            <td colspan="5" style="text-align: center;">Total SMS: <strong>{len(codes)}</strong></td>
+            <td colspan="2">Currency: USD</td>
+            <td>My Payout: <strong>{total_payout:.2f}</strong></td>
+        </tr>
+    '''
     
     return f'''
 <!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['my_sms']} - {t['app_name']}</title>
+    <title>My SMS - SELVA PANEL</title>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
     <style>
-        .header {{ background: #ffffff; border-bottom: 1px solid #e8e0f0; }}
-        .sms-container {{ max-width: 1200px; margin: 0 auto; }}
-        .table-wrapper {{ overflow-x: auto; border-radius: 16px; background: #ffffff; border: 1px solid #e8e0f0; }}
-        .sms-table {{ width: 100%; border-collapse: collapse; }}
-        .sms-table th {{ background: #f8f5ff; padding: 14px 15px; font-weight: 600; color: #5a189a; border-bottom: 2px solid #d9c2f0; text-align: right; }}
-        .sms-table td {{ padding: 12px 15px; border-bottom: 1px solid #f0e8fa; }}
-        .sms-table tr:hover td {{ background: #fdfbff; }}
-        .stats-card {{ background: linear-gradient(135deg, #9d4edd, #7b2cbf); color: white; padding: 20px; border-radius: 20px; margin-bottom: 25px; }}
-        .stats-card h3 {{ color: white; margin-bottom: 10px; }}
-        .action-bar {{ display: flex; gap: 10px; margin-bottom: 15px; }}
-        .btn-sync {{ background: #2cc185; box-shadow: 0 4px 10px rgba(44, 193, 133, 0.2); }}
-        .btn-sync:hover {{ background: #25a86f; }}
-        .sync-status {{ margin-left: 15px; font-size: 0.9rem; }}
-        .new-message-alert {{
-            background: #2cc185;
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: 'Roboto', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #333; min-height: 100vh; }}
+        
+        .container {{ display: flex; min-height: 100vh; }}
+        
+        .sidebar {{
+            width: 280px;
+            background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
             color: white;
-            padding: 10px 20px;
-            border-radius: 10px;
-            margin-bottom: 15px;
-            display: none;
-            animation: pulse 1s infinite;
+            padding: 20px 0;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+            box-shadow: 2px 0 15px rgba(0, 0, 0, 0.2);
         }}
-        @keyframes pulse {{
-            0% {{ opacity: 1; }}
-            50% {{ opacity: 0.7; }}
-            100% {{ opacity: 1; }}
+        
+        .sidebar-header {{ padding: 20px; border-bottom: 2px solid rgba(255, 255, 255, 0.1); margin-bottom: 15px; }}
+        .sidebar-header h2 {{ font-size: 18px; color: white; margin-bottom: 5px; font-family: 'Poppins', sans-serif; font-weight: 700; }}
+        .sidebar-header p {{ font-size: 12px; color: rgba(255, 255, 255, 0.8); }}
+        
+        .sidebar-menu {{ list-style: none; }}
+        .sidebar-menu a {{
+            display: block;
+            padding: 12px 20px;
+            color: white;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            font-size: 13px;
+            font-weight: 500;
+            border-left: 3px solid transparent;
         }}
-        .connection-status {{
-            display: inline-block;
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: #2cc185;
-            margin-left: 10px;
+        .sidebar-menu a:hover {{ background-color: rgba(255, 255, 255, 0.15); padding-left: 24px; }}
+        .sidebar-menu a.active {{ background-color: rgba(255, 255, 255, 0.25); border-left-color: white; }}
+        
+        .main-content {{ margin-left: 280px; flex: 1; display: flex; flex-direction: column; }}
+        
+        .topbar {{
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 25px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
         }}
-        .connection-status.disconnected {{
-            background: #ff5e5e;
+        
+        .topbar-title {{ font-size: 22px; font-weight: bold; font-family: 'Poppins', sans-serif; letter-spacing: 0.5px; }}
+        
+        .user-avatar {{
+            width: 40px; height: 40px; border-radius: 50%;
+            background: rgba(255, 255, 255, 0.3);
+            display: flex; align-items: center; justify-content: center;
+            font-weight: bold; font-size: 18px; border: 2px solid white;
+        }}
+        
+        .breadcrumb {{
+            padding: 15px 25px; background: rgba(255, 255, 255, 0.95);
+            border-bottom: 1px solid #e0e0e0; font-size: 13px; color: #666;
+        }}
+        .breadcrumb a {{ color: #667eea; text-decoration: none; margin: 0 5px; font-weight: 500; }}
+        
+        .content {{ flex: 1; padding: 25px; overflow-y: auto; background: #f5f5f5; }}
+        
+        .page-title {{
+            font-size: 28px; font-weight: bold; color: white; margin-bottom: 20px;
+            font-family: 'Poppins', sans-serif; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }}
+        
+        .stats-grid {{
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px; margin-bottom: 20px;
+        }}
+        
+        .stat-card {{
+            background: white; padding: 20px; border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); text-align: center;
+        }}
+        
+        .stat-card .stat-value {{ font-size: 32px; font-weight: bold; color: #667eea; }}
+        .stat-card .stat-label {{ font-size: 12px; color: #666; margin-top: 5px; text-transform: uppercase; }}
+        
+        .filter-section {{
+            background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 15px; align-items: flex-end;
+        }}
+        
+        .filter-group {{ display: flex; flex-direction: column; }}
+        .filter-group label {{ font-size: 12px; font-weight: 600; color: #333; margin-bottom: 6px; text-transform: uppercase; }}
+        .filter-group input, .filter-group select {{
+            padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px;
+            font-size: 13px; font-family: 'Roboto', sans-serif;
+        }}
+        .filter-group input:focus, .filter-group select:focus {{ outline: none; border-color: #667eea; }}
+        
+        .btn-filter {{
+            padding: 10px 20px; background-color: #dc3545; color: white;
+            border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 13px;
+        }}
+        
+        .toolbar {{
+            background: white; padding: 15px 20px; border-radius: 8px; margin-bottom: 15px;
+            display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;
+            gap: 10px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+        }}
+        
+        .toolbar-right {{ display: flex; gap: 8px; align-items: center; }}
+        .search-box {{ padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; width: 200px; }}
+        
+        .toolbar-btn {{
+            padding: 6px 12px; border: 1px solid #ddd; background: white;
+            color: #333; border-radius: 6px; cursor: pointer; font-size: 12px;
+            font-weight: 600; transition: all 0.2s ease;
+        }}
+        .toolbar-btn:hover {{ background-color: #f8f9fa; border-color: #667eea; color: #667eea; }}
+        
+        .table-container {{
+            background: white; border-radius: 8px; overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); margin-bottom: 20px;
+            animation: slideIn 0.3s ease;
+        }}
+        
+        @keyframes slideIn {{ from {{ opacity: 0; transform: translateY(10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+        
+        table {{ width: 100%; border-collapse: collapse; }}
+        
+        thead {{ background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); color: white; }}
+        
+        th {{
+            padding: 15px; text-align: right; font-weight: 600;
+            font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;
+        }}
+        
+        td {{ padding: 15px; border-bottom: 1px solid #f0f0f0; font-size: 13px; color: #333; }}
+        tbody tr:hover {{ background-color: #f8f9fa; }}
+        
+        .date-cell {{ font-weight: 500; color: #667eea; }}
+        .range-cell {{ font-weight: 600; color: #333; }}
+        .currency-cell {{ color: #28a745; font-weight: 600; }}
+        .payout-cell {{ color: #667eea; font-weight: 600; }}
+        
+        .summary-row {{
+            background: linear-gradient(90deg, #f8f9fa 0%, #f0f1f5 100%);
+            font-weight: 600; border-top: 2px solid #667eea;
+        }}
+        
+        .pagination {{
+            padding: 15px 20px; background: white; border-top: 1px solid #f0f0f0;
+            display: flex; justify-content: space-between; align-items: center;
+            font-size: 12px; color: #666; border-radius: 0 0 8px 8px;
+        }}
+        
+        .pagination-links {{ display: flex; gap: 5px; }}
+        .pagination-links a, .pagination-links span {{
+            padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px;
+            cursor: pointer; text-decoration: none; color: #667eea; transition: all 0.2s ease;
+        }}
+        .pagination-links a:hover {{ background-color: #667eea; color: white; border-color: #667eea; }}
+        .pagination-links span.current {{ background-color: #667eea; color: white; border-color: #667eea; }}
+        
+        @media (max-width: 768px) {{
+            .sidebar {{ width: 0; transform: translateX(-100%); }}
+            .main-content {{ margin-left: 0; }}
+            .page-title {{ font-size: 20px; }}
+            .filter-section {{ grid-template-columns: 1fr; }}
         }}
     </style>
 </head>
 <body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1 style="color: #5a189a;">
-            💬 {t['my_sms']}
-            <span id="connectionStatus" class="connection-status" title="متصل - التحديث الفوري نشط"></span>
-        </h1>
-        <div>
-            <button class="btn btn-sync" onclick="syncMySMS()" id="syncBtn">
-                <i class="fas fa-sync-alt"></i> Sync
-            </button>
+    <div class="container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h2>SELVA PANEL</h2>
+                <p>SMS Management</p>
+            </div>
+            <ul class="sidebar-menu">
+                <li><a href="/dashboard">📊 Dashboard</a></li>
+                <li><a href="/user/my-number">📱 My Numbers</a></li>
+                <li><a href="/user/my-sms" class="active">💬 My SMS</a></li>
+                <li><a href="/user/public-sms">📋 Public SMS</a></li>
+                <li><a href="/user/add-number">➕ Add Numbers</a></li>
+                <li><a href="/user/client">👥 My Clients</a></li>
+                <li><a href="/user/test-number">🧪 Test Numbers</a></li>
+                <li><a href="/user/linking-channels">🔗 Link Channels</a></li>
+                <li><a href="/notifications">🔔 Notifications</a></li>
+                <li><a href="/support">💬 Support</a></li>
+            </ul>
+        </aside>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Top Bar -->
+            <div class="topbar">
+                <div class="topbar-title">SMS CDR Reports</div>
+                <div class="user-avatar">{session.get('username', 'U')[0].upper()}</div>
+            </div>
+
+            <!-- Breadcrumb -->
+            <div class="breadcrumb">
+                <a href="/dashboard">Home</a> » <a href="#">SMS Module</a> » My SMS
+            </div>
+
+            <!-- Content -->
+            <div class="content">
+                <h1 class="page-title">My SMS Messages</h1>
+
+                <!-- Stats -->
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value">{len(codes)}</div>
+                        <div class="stat-label">Total Messages</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">$ {total_payout:.2f}</div>
+                        <div class="stat-label">Total Payout</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="liveStatus">● LIVE</div>
+                        <div class="stat-label">Connection</div>
+                    </div>
+                </div>
+
+                <!-- Filter Section -->
+                <div class="filter-section">
+                    <div class="filter-group">
+                        <label>From Date</label>
+                        <input type="date" id="filterDate">
+                    </div>
+                    <div class="filter-group">
+                        <label>Search CLI</label>
+                        <input type="text" placeholder="WhatsApp, Telegram..." id="filterCLI">
+                    </div>
+                    <div class="filter-group">
+                        <label>Search Number</label>
+                        <input type="text" placeholder="Search number..." id="filterNumber">
+                    </div>
+                    <button class="btn-filter" onclick="filterTable()">🔍 Filter</button>
+                    <button class="toolbar-btn" onclick="clearFilter()">✕ Clear</button>
+                </div>
+
+                <!-- Toolbar -->
+                <div class="toolbar">
+                    <div><span style="font-weight: 600; color: #667eea;">📨 Your Personal SMS</span></div>
+                    <div class="toolbar-right">
+                        <span style="color: #666; font-size: 12px;">Search:</span>
+                        <input type="search" class="search-box" placeholder="Search..." oninput="searchTable(this.value)">
+                        <button class="toolbar-btn" onclick="location.reload()">🔄 Refresh</button>
+                        <button class="toolbar-btn" onclick="syncMessages()">📡 Sync</button>
+                    </div>
+                </div>
+
+                <!-- Table -->
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Range</th>
+                                <th>Number</th>
+                                <th>CLI</th>
+                                <th>SMS</th>
+                                <th>SMS Count</th>
+                                <th>Currency</th>
+                                <th>My Payout</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {rows}
+                            {summary_row if codes else ''}
+                        </tbody>
+                    </table>
+
+                    <!-- Pagination -->
+                    <div class="pagination">
+                        <span>Showing 1 to {len(codes)} of {len(codes)} entries</span>
+                        <div class="pagination-links">
+                            <a href="#">First</a>
+                            <a href="#">Previous</a>
+                            <span class="current">1</span>
+                            <a href="#">Next</a>
+                            <a href="#">Last</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
-    
-    <div class="container sms-container">
-        <div class="stats-card">
-            <h3><i class="fas fa-envelope"></i> رسائلك الخاصة</h3>
-            <p>تظهر هنا جميع الرسائل التي تحتوي على أرقامك المخزنة في النظام</p>
-            <p style="margin-top: 10px; font-size: 1.2rem;">
-                عدد الرسائل: <strong id="messagesCount">{len(codes)}</strong>
-                <span id="syncStatus" class="sync-status"></span>
-            </p>
-            <p style="margin-top: 5px; font-size: 0.9rem; opacity: 0.9;">
-                <i class="fas fa-bolt"></i> اضغط Sync لتحديث الرسائل يدوياً
-            </p>
-        </div>
-        
-        <div id="newMessageAlert" class="new-message-alert">
-            <i class="fas fa-bell"></i> رسالة جديدة! جاري التحديث...
-        </div>
-        
-        <div class="card" style="padding: 0; overflow: hidden;">
-            <div style="padding: 20px; border-bottom: 1px solid #e8e0f0; display: flex; justify-content: space-between; align-items: center;">
-                <h2 style="margin: 0;"><i class="fas fa-list"></i> سجل الرسائل</h2>
-                <button class="btn btn-sm" onclick="location.reload()" style="padding: 8px 15px;">
-                    <i class="fas fa-redo-alt"></i> تحديث الصفحة
-                </button>
-            </div>
-            <div class="table-wrapper" style="border: none; border-radius: 0;">
-                <table class="sms-table">
-                    <thead>
-                        <tr>
-                            <th><i class="fas fa-phone"></i> {t['phone']}</th>
-                            <th><i class="fas fa-key"></i> {t['code']} / الرسالة</th>
-                            <th><i class="far fa-calendar"></i> {t['date']}</th>
-                        </tr>
-                    </thead>
-                    <tbody id="messagesTableBody">
-                        {rows}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-    
+
     <script>
         const userId = {user_id};
         let eventSource = null;
-        let messageCount = {len(codes)};
         
-        // وظيفة المزامنة
-        async function syncMySMS() {{
-            const btn = document.getElementById('syncBtn');
-            const statusEl = document.getElementById('syncStatus');
-            const originalText = btn.innerHTML;
-            
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> جاري المزامنة...';
-            statusEl.innerHTML = '<span style="color: #fdb44b;"><i class="fas fa-spinner fa-spin"></i> جاري المزامنة...</span>';
-            
+        // مزامنة الرسائل
+        async function syncMessages() {{
             try {{
                 const r = await fetch('/api/sync');
                 const d = await r.json();
-                
-                if (d.success) {{
-                    if (d.new_messages > 0) {{
-                        statusEl.innerHTML = '<span style="color: #2cc185;"><i class="fas fa-check-circle"></i> تمت المزامنة! جاري التحديث...</span>';
-                        setTimeout(() => location.reload(), 1000);
-                    }} else {{
-                        statusEl.innerHTML = '<span style="color: #2cc185;"><i class="fas fa-check-circle"></i> لا توجد رسائل جديدة</span>';
-                        btn.disabled = false;
-                        btn.innerHTML = originalText;
-                        setTimeout(() => statusEl.innerHTML = '', 3000);
-                    }}
+                if (d.success && d.new_messages > 0) {{
+                    location.reload();
                 }} else {{
-                    statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> خطأ في المزامنة</span>';
-                    btn.disabled = false;
-                    btn.innerHTML = originalText;
+                    alert('✅ لا توجد رسائل جديدة');
                 }}
             }} catch(e) {{
-                statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> خطأ في الاتصال</span>';
-                btn.disabled = false;
-                btn.innerHTML = originalText;
+                alert('❌ فشل المزامنة');
             }}
         }}
         
-        // الاتصال بـ SSE للتحديث الفوري
+        // بحث في الجدول
+        function searchTable(query) {{
+            document.querySelectorAll('tbody tr:not(.summary-row)').forEach(row => {{
+                const text = row.textContent.toLowerCase();
+                row.style.display = text.includes(query.toLowerCase()) ? '' : 'none';
+            }});
+        }}
+        
+        // فلترة متقدمة
+        function filterTable() {{
+            const date = document.getElementById('filterDate').value;
+            const cli = document.getElementById('filterCLI').value.toLowerCase();
+            const number = document.getElementById('filterNumber').value;
+            
+            document.querySelectorAll('tbody tr:not(.summary-row)').forEach(row => {{
+                let show = true;
+                const text = row.textContent.toLowerCase();
+                if (date && !text.includes(date)) show = false;
+                if (cli && !text.includes(cli)) show = false;
+                if (number && !text.includes(number)) show = false;
+                row.style.display = show ? '' : 'none';
+            }});
+        }}
+        
+        // مسح الفلاتر
+        function clearFilter() {{
+            document.getElementById('filterDate').value = '';
+            document.getElementById('filterCLI').value = '';
+            document.getElementById('filterNumber').value = '';
+            document.querySelectorAll('tbody tr:not(.summary-row)').forEach(row => {{
+                row.style.display = '';
+            }});
+        }}
+        
+        // اتصال SSE للتحديثات الفورية
         function connectSSE() {{
-            if (eventSource) {{
-                eventSource.close();
-            }}
+            if (eventSource) eventSource.close();
             
             eventSource = new EventSource('/api/sse/connect/' + userId);
             
             eventSource.onopen = function() {{
-                console.log('✅ SSE Connected');
-                document.getElementById('connectionStatus').className = 'connection-status';
-                document.getElementById('connectionStatus').title = 'متصل - التحديث الفوري نشط';
+                document.getElementById('liveStatus').innerHTML = '● LIVE';
+                document.getElementById('liveStatus').style.color = '#28a745';
             }};
             
             eventSource.onerror = function() {{
-                console.log('❌ SSE Error');
-                document.getElementById('connectionStatus').className = 'connection-status disconnected';
-                document.getElementById('connectionStatus').title = 'انقطع الاتصال - جاري إعادة المحاولة...';
+                document.getElementById('liveStatus').innerHTML = '● RECONNECTING';
+                document.getElementById('liveStatus').style.color = '#ffc107';
                 setTimeout(connectSSE, 5000);
             }};
             
             eventSource.onmessage = function(event) {{
                 try {{
                     const data = JSON.parse(event.data);
-                    
                     if (data.type === 'new_sms') {{
-                        // إظهار تنبيه
-                        const alert = document.getElementById('newMessageAlert');
-                        alert.style.display = 'block';
-                        setTimeout(() => alert.style.display = 'none', 3000);
-                        
-                        // إضافة الرسالة الجديدة إلى أعلى الجدول
-                        const smsData = data.data;
-                        const tbody = document.getElementById('messagesTableBody');
-                        
-                        const newRow = `
-                            <tr style="background: #f0e8fa;">
-                                <td style="direction: ltr; font-family: monospace; font-size: 1.1rem;">${{smsData.number || 'غير معروف'}}</td>
-                                <td><strong style="color: #9d4edd;">${{smsData.code || ''}}</strong></td>
-                                <td>${{smsData.received_at ? smsData.received_at.slice(0, 16) : ''}}</td>
-                            </tr>
-                        `;
-                        
-                        // إزالة صف "لا توجد رسائل" إذا كان موجوداً
-                        const firstRow = tbody.querySelector('tr');
-                        if (firstRow && firstRow.cells.length === 1) {{
-                            tbody.innerHTML = newRow;
-                        }} else {{
-                            tbody.insertAdjacentHTML('afterbegin', newRow);
-                        }}
-                        
-                        // تحديث العداد
-                        messageCount++;
-                        document.getElementById('messagesCount').textContent = messageCount;
-                        
-                        // إزالة تأثير الخلفية بعد 3 ثواني
-                        setTimeout(() => {{
-                            const rows = tbody.querySelectorAll('tr');
-                            if (rows.length > 0) {{
-                                rows[0].style.background = '';
-                                rows[0].style.transition = 'background 1s';
-                            }}
-                        }}, 3000);
+                        syncMessages();
                     }}
-                }} catch(e) {{
-                    console.error('Error parsing SSE message:', e);
-                }}
+                }} catch(e) {{}}
             }};
         }}
         
-        // بدء الاتصال
         connectSSE();
         
-        // تنظيف عند مغادرة الصفحة
         window.addEventListener('beforeunload', function() {{
-            if (eventSource) {{
-                eventSource.close();
-            }}
+            if (eventSource) eventSource.close();
         }});
         
-        // تحديث تلقائي كل 60 ثانية كاحتياط
+        // تحديث تلقائي كل 60 ثانية
         setInterval(function() {{
             fetch('/api/sync').then(r => r.json()).then(d => {{
-                if (d.success && d.new_messages > 0) {{
-                    location.reload();
-                }}
+                if (d.success && d.new_messages > 0) location.reload();
             }});
         }}, 60000);
     </script>
@@ -2337,780 +2565,128 @@ def user_my_sms_page():
 def user_public_sms_page():
     lang = session.get('lang', 'ar')
     t = LANGUAGES[lang]
-    theme = 'light'
     
     cursor = db_conn.cursor()
-    cursor.execute('''
-        SELECT text, date FROM messages 
-        WHERE is_deleted = 0 
-        ORDER BY message_id DESC 
-        LIMIT 100
-    ''')
+    cursor.execute("SELECT text, date FROM messages WHERE is_deleted = 0 ORDER BY id DESC LIMIT 100")
     messages = cursor.fetchall()
     
     cursor.execute("SELECT value FROM stats WHERE key = 'last_sync'")
     last_sync = cursor.fetchone()
-    last_sync_time = last_sync[0] if last_sync else t['no_messages']
-    
-    # ============================================================
-    #         قاموس شامل لجميع دول العالم (العلم + الكود + الاسم)
-    # ============================================================
-    COUNTRIES_DB = {
-        # أفغانستان
-        'af': {'flag': '🇦🇫', 'code': '+93', 'name': 'Afghanistan', 'name_ar': 'أفغانستان'},
-        # ألبانيا
-        'al': {'flag': '🇦🇱', 'code': '+355', 'name': 'Albania', 'name_ar': 'ألبانيا'},
-        # الجزائر
-        'dz': {'flag': '🇩🇿', 'code': '+213', 'name': 'Algeria', 'name_ar': 'الجزائر'},
-        # أندورا
-        'ad': {'flag': '🇦🇩', 'code': '+376', 'name': 'Andorra', 'name_ar': 'أندورا'},
-        # أنغولا
-        'ao': {'flag': '🇦🇴', 'code': '+244', 'name': 'Angola', 'name_ar': 'أنغولا'},
-        # أنتيغوا وبربودا
-        'ag': {'flag': '🇦🇬', 'code': '+1268', 'name': 'Antigua and Barbuda', 'name_ar': 'أنتيغوا وبربودا'},
-        # الأرجنتين
-        'ar': {'flag': '🇦🇷', 'code': '+54', 'name': 'Argentina', 'name_ar': 'الأرجنتين'},
-        # أرمينيا
-        'am': {'flag': '🇦🇲', 'code': '+374', 'name': 'Armenia', 'name_ar': 'أرمينيا'},
-        # أستراليا
-        'au': {'flag': '🇦🇺', 'code': '+61', 'name': 'Australia', 'name_ar': 'أستراليا'},
-        # النمسا
-        'at': {'flag': '🇦🇹', 'code': '+43', 'name': 'Austria', 'name_ar': 'النمسا'},
-        # أذربيجان
-        'az': {'flag': '🇦🇿', 'code': '+994', 'name': 'Azerbaijan', 'name_ar': 'أذربيجان'},
-        # باهاماس
-        'bs': {'flag': '🇧🇸', 'code': '+1242', 'name': 'Bahamas', 'name_ar': 'باهاماس'},
-        # البحرين
-        'bh': {'flag': '🇧🇭', 'code': '+973', 'name': 'Bahrain', 'name_ar': 'البحرين'},
-        # بنغلاديش
-        'bd': {'flag': '🇧🇩', 'code': '+880', 'name': 'Bangladesh', 'name_ar': 'بنغلاديش'},
-        # باربادوس
-        'bb': {'flag': '🇧🇧', 'code': '+1246', 'name': 'Barbados', 'name_ar': 'باربادوس'},
-        # بيلاروسيا
-        'by': {'flag': '🇧🇾', 'code': '+375', 'name': 'Belarus', 'name_ar': 'بيلاروسيا'},
-        # بلجيكا
-        'be': {'flag': '🇧🇪', 'code': '+32', 'name': 'Belgium', 'name_ar': 'بلجيكا'},
-        # بليز
-        'bz': {'flag': '🇧🇿', 'code': '+501', 'name': 'Belize', 'name_ar': 'بليز'},
-        # بنين
-        'bj': {'flag': '🇧🇯', 'code': '+229', 'name': 'Benin', 'name_ar': 'بنين'},
-        # بوتان
-        'bt': {'flag': '🇧🇹', 'code': '+975', 'name': 'Bhutan', 'name_ar': 'بوتان'},
-        # بوليفيا
-        'bo': {'flag': '🇧🇴', 'code': '+591', 'name': 'Bolivia', 'name_ar': 'بوليفيا'},
-        # البوسنة والهرسك
-        'ba': {'flag': '🇧🇦', 'code': '+387', 'name': 'Bosnia and Herzegovina', 'name_ar': 'البوسنة والهرسك'},
-        # بوتسوانا
-        'bw': {'flag': '🇧🇼', 'code': '+267', 'name': 'Botswana', 'name_ar': 'بوتسوانا'},
-        # البرازيل
-        'br': {'flag': '🇧🇷', 'code': '+55', 'name': 'Brazil', 'name_ar': 'البرازيل'},
-        # بروناي
-        'bn': {'flag': '🇧🇳', 'code': '+673', 'name': 'Brunei', 'name_ar': 'بروناي'},
-        # بلغاريا
-        'bg': {'flag': '🇧🇬', 'code': '+359', 'name': 'Bulgaria', 'name_ar': 'بلغاريا'},
-        # بوركينا فاسو
-        'bf': {'flag': '🇧🇫', 'code': '+226', 'name': 'Burkina Faso', 'name_ar': 'بوركينا فاسو'},
-        # بوروندي
-        'bi': {'flag': '🇧🇮', 'code': '+257', 'name': 'Burundi', 'name_ar': 'بوروندي'},
-        # الرأس الأخضر
-        'cv': {'flag': '🇨🇻', 'code': '+238', 'name': 'Cabo Verde', 'name_ar': 'الرأس الأخضر'},
-        # كمبوديا
-        'kh': {'flag': '🇰🇭', 'code': '+855', 'name': 'Cambodia', 'name_ar': 'كمبوديا'},
-        # الكاميرون
-        'cm': {'flag': '🇨🇲', 'code': '+237', 'name': 'Cameroon', 'name_ar': 'الكاميرون'},
-        # كندا
-        'ca': {'flag': '🇨🇦', 'code': '+1', 'name': 'Canada', 'name_ar': 'كندا'},
-        # جمهورية أفريقيا الوسطى
-        'cf': {'flag': '🇨🇫', 'code': '+236', 'name': 'Central African Republic', 'name_ar': 'جمهورية أفريقيا الوسطى'},
-        # تشاد
-        'td': {'flag': '🇹🇩', 'code': '+235', 'name': 'Chad', 'name_ar': 'تشاد'},
-        # تشيلي
-        'cl': {'flag': '🇨🇱', 'code': '+56', 'name': 'Chile', 'name_ar': 'تشيلي'},
-        # الصين
-        'cn': {'flag': '🇨🇳', 'code': '+86', 'name': 'China', 'name_ar': 'الصين'},
-        # كولومبيا
-        'co': {'flag': '🇨🇴', 'code': '+57', 'name': 'Colombia', 'name_ar': 'كولومبيا'},
-        # جزر القمر
-        'km': {'flag': '🇰🇲', 'code': '+269', 'name': 'Comoros', 'name_ar': 'جزر القمر'},
-        # الكونغو
-        'cg': {'flag': '🇨🇬', 'code': '+242', 'name': 'Congo', 'name_ar': 'الكونغو'},
-        # كوستاريكا
-        'cr': {'flag': '🇨🇷', 'code': '+506', 'name': 'Costa Rica', 'name_ar': 'كوستاريكا'},
-        # كرواتيا
-        'hr': {'flag': '🇭🇷', 'code': '+385', 'name': 'Croatia', 'name_ar': 'كرواتيا'},
-        # كوبا
-        'cu': {'flag': '🇨🇺', 'code': '+53', 'name': 'Cuba', 'name_ar': 'كوبا'},
-        # قبرص
-        'cy': {'flag': '🇨🇾', 'code': '+357', 'name': 'Cyprus', 'name_ar': 'قبرص'},
-        # التشيك
-        'cz': {'flag': '🇨🇿', 'code': '+420', 'name': 'Czech Republic', 'name_ar': 'التشيك'},
-        # الدنمارك
-        'dk': {'flag': '🇩🇰', 'code': '+45', 'name': 'Denmark', 'name_ar': 'الدنمارك'},
-        # جيبوتي
-        'dj': {'flag': '🇩🇯', 'code': '+253', 'name': 'Djibouti', 'name_ar': 'جيبوتي'},
-        # دومينيكا
-        'dm': {'flag': '🇩🇲', 'code': '+1767', 'name': 'Dominica', 'name_ar': 'دومينيكا'},
-        # جمهورية الدومينيكان
-        'do': {'flag': '🇩🇴', 'code': '+1809', 'name': 'Dominican Republic', 'name_ar': 'جمهورية الدومينيكان'},
-        # الإكوادور
-        'ec': {'flag': '🇪🇨', 'code': '+593', 'name': 'Ecuador', 'name_ar': 'الإكوادور'},
-        # مصر
-        'eg': {'flag': '🇪🇬', 'code': '+20', 'name': 'Egypt', 'name_ar': 'مصر'},
-        # السلفادور
-        'sv': {'flag': '🇸🇻', 'code': '+503', 'name': 'El Salvador', 'name_ar': 'السلفادور'},
-        # غينيا الاستوائية
-        'gq': {'flag': '🇬🇶', 'code': '+240', 'name': 'Equatorial Guinea', 'name_ar': 'غينيا الاستوائية'},
-        # إريتريا
-        'er': {'flag': '🇪🇷', 'code': '+291', 'name': 'Eritrea', 'name_ar': 'إريتريا'},
-        # إستونيا
-        'ee': {'flag': '🇪🇪', 'code': '+372', 'name': 'Estonia', 'name_ar': 'إستونيا'},
-        # إسواتيني
-        'sz': {'flag': '🇸🇿', 'code': '+268', 'name': 'Eswatini', 'name_ar': 'إسواتيني'},
-        # إثيوبيا
-        'et': {'flag': '🇪🇹', 'code': '+251', 'name': 'Ethiopia', 'name_ar': 'إثيوبيا'},
-        # فيجي
-        'fj': {'flag': '🇫🇯', 'code': '+679', 'name': 'Fiji', 'name_ar': 'فيجي'},
-        # فنلندا
-        'fi': {'flag': '🇫🇮', 'code': '+358', 'name': 'Finland', 'name_ar': 'فنلندا'},
-        # فرنسا
-        'fr': {'flag': '🇫🇷', 'code': '+33', 'name': 'France', 'name_ar': 'فرنسا'},
-        # الغابون
-        'ga': {'flag': '🇬🇦', 'code': '+241', 'name': 'Gabon', 'name_ar': 'الغابون'},
-        # غامبيا
-        'gm': {'flag': '🇬🇲', 'code': '+220', 'name': 'Gambia', 'name_ar': 'غامبيا'},
-        # جورجيا
-        'ge': {'flag': '🇬🇪', 'code': '+995', 'name': 'Georgia', 'name_ar': 'جورجيا'},
-        # ألمانيا
-        'de': {'flag': '🇩🇪', 'code': '+49', 'name': 'Germany', 'name_ar': 'ألمانيا'},
-        # غانا
-        'gh': {'flag': '🇬🇭', 'code': '+233', 'name': 'Ghana', 'name_ar': 'غانا'},
-        # اليونان
-        'gr': {'flag': '🇬🇷', 'code': '+30', 'name': 'Greece', 'name_ar': 'اليونان'},
-        # غرينادا
-        'gd': {'flag': '🇬🇩', 'code': '+1473', 'name': 'Grenada', 'name_ar': 'غرينادا'},
-        # غواتيمالا
-        'gt': {'flag': '🇬🇹', 'code': '+502', 'name': 'Guatemala', 'name_ar': 'غواتيمالا'},
-        # غينيا
-        'gn': {'flag': '🇬🇳', 'code': '+224', 'name': 'Guinea', 'name_ar': 'غينيا'},
-        # غينيا بيساو
-        'gw': {'flag': '🇬🇼', 'code': '+245', 'name': 'Guinea-Bissau', 'name_ar': 'غينيا بيساو'},
-        # غيانا
-        'gy': {'flag': '🇬🇾', 'code': '+592', 'name': 'Guyana', 'name_ar': 'غيانا'},
-        # هايتي
-        'ht': {'flag': '🇭🇹', 'code': '+509', 'name': 'Haiti', 'name_ar': 'هايتي'},
-        # هندوراس
-        'hn': {'flag': '🇭🇳', 'code': '+504', 'name': 'Honduras', 'name_ar': 'هندوراس'},
-        # المجر
-        'hu': {'flag': '🇭🇺', 'code': '+36', 'name': 'Hungary', 'name_ar': 'المجر'},
-        # آيسلندا
-        'is': {'flag': '🇮🇸', 'code': '+354', 'name': 'Iceland', 'name_ar': 'آيسلندا'},
-        # الهند
-        'in': {'flag': '🇮🇳', 'code': '+91', 'name': 'India', 'name_ar': 'الهند'},
-        # إندونيسيا
-        'id': {'flag': '🇮🇩', 'code': '+62', 'name': 'Indonesia', 'name_ar': 'إندونيسيا'},
-        # إيران
-        'ir': {'flag': '🇮🇷', 'code': '+98', 'name': 'Iran', 'name_ar': 'إيران'},
-        # العراق
-        'iq': {'flag': '🇮🇶', 'code': '+964', 'name': 'Iraq', 'name_ar': 'العراق'},
-        # أيرلندا
-        'ie': {'flag': '🇮🇪', 'code': '+353', 'name': 'Ireland', 'name_ar': 'أيرلندا'},
-        # إسرائيل
-        'il': {'flag': '🇮🇱', 'code': '+972', 'name': 'Israel', 'name_ar': 'إسرائيل'},
-        # إيطاليا
-        'it': {'flag': '🇮🇹', 'code': '+39', 'name': 'Italy', 'name_ar': 'إيطاليا'},
-        # ساحل العاج
-        'ci': {'flag': '🇨🇮', 'code': '+225', 'name': 'Ivory Coast', 'name_ar': 'ساحل العاج'},
-        # جامايكا
-        'jm': {'flag': '🇯🇲', 'code': '+1876', 'name': 'Jamaica', 'name_ar': 'جامايكا'},
-        # اليابان
-        'jp': {'flag': '🇯🇵', 'code': '+81', 'name': 'Japan', 'name_ar': 'اليابان'},
-        # الأردن
-        'jo': {'flag': '🇯🇴', 'code': '+962', 'name': 'Jordan', 'name_ar': 'الأردن'},
-        # كازاخستان
-        'kz': {'flag': '🇰🇿', 'code': '+7', 'name': 'Kazakhstan', 'name_ar': 'كازاخستان'},
-        # كينيا
-        'ke': {'flag': '🇰🇪', 'code': '+254', 'name': 'Kenya', 'name_ar': 'كينيا'},
-        # كيريباتي
-        'ki': {'flag': '🇰🇮', 'code': '+686', 'name': 'Kiribati', 'name_ar': 'كيريباتي'},
-        # كوريا الشمالية
-        'kp': {'flag': '🇰🇵', 'code': '+850', 'name': 'North Korea', 'name_ar': 'كوريا الشمالية'},
-        # كوريا الجنوبية
-        'kr': {'flag': '🇰🇷', 'code': '+82', 'name': 'South Korea', 'name_ar': 'كوريا الجنوبية'},
-        # الكويت
-        'kw': {'flag': '🇰🇼', 'code': '+965', 'name': 'Kuwait', 'name_ar': 'الكويت'},
-        # قيرغيزستان
-        'kg': {'flag': '🇰🇬', 'code': '+996', 'name': 'Kyrgyzstan', 'name_ar': 'قيرغيزستان'},
-        # لاوس
-        'la': {'flag': '🇱🇦', 'code': '+856', 'name': 'Laos', 'name_ar': 'لاوس'},
-        # لاتفيا
-        'lv': {'flag': '🇱🇻', 'code': '+371', 'name': 'Latvia', 'name_ar': 'لاتفيا'},
-        # لبنان
-        'lb': {'flag': '🇱🇧', 'code': '+961', 'name': 'Lebanon', 'name_ar': 'لبنان'},
-        # ليسوتو
-        'ls': {'flag': '🇱🇸', 'code': '+266', 'name': 'Lesotho', 'name_ar': 'ليسوتو'},
-        # ليبيريا
-        'lr': {'flag': '🇱🇷', 'code': '+231', 'name': 'Liberia', 'name_ar': 'ليبيريا'},
-        # ليبيا
-        'ly': {'flag': '🇱🇾', 'code': '+218', 'name': 'Libya', 'name_ar': 'ليبيا'},
-        # ليختنشتاين
-        'li': {'flag': '🇱🇮', 'code': '+423', 'name': 'Liechtenstein', 'name_ar': 'ليختنشتاين'},
-        # ليتوانيا
-        'lt': {'flag': '🇱🇹', 'code': '+370', 'name': 'Lithuania', 'name_ar': 'ليتوانيا'},
-        # لوكسمبورغ
-        'lu': {'flag': '🇱🇺', 'code': '+352', 'name': 'Luxembourg', 'name_ar': 'لوكسمبورغ'},
-        # مدغشقر
-        'mg': {'flag': '🇲🇬', 'code': '+261', 'name': 'Madagascar', 'name_ar': 'مدغشقر'},
-        # مالاوي
-        'mw': {'flag': '🇲🇼', 'code': '+265', 'name': 'Malawi', 'name_ar': 'مالاوي'},
-        # ماليزيا
-        'my': {'flag': '🇲🇾', 'code': '+60', 'name': 'Malaysia', 'name_ar': 'ماليزيا'},
-        # المالديف
-        'mv': {'flag': '🇲🇻', 'code': '+960', 'name': 'Maldives', 'name_ar': 'المالديف'},
-        # مالي
-        'ml': {'flag': '🇲🇱', 'code': '+223', 'name': 'Mali', 'name_ar': 'مالي'},
-        # مالطا
-        'mt': {'flag': '🇲🇹', 'code': '+356', 'name': 'Malta', 'name_ar': 'مالطا'},
-        # جزر مارشال
-        'mh': {'flag': '🇲🇭', 'code': '+692', 'name': 'Marshall Islands', 'name_ar': 'جزر مارشال'},
-        # موريتانيا
-        'mr': {'flag': '🇲🇷', 'code': '+222', 'name': 'Mauritania', 'name_ar': 'موريتانيا'},
-        # موريشيوس
-        'mu': {'flag': '🇲🇺', 'code': '+230', 'name': 'Mauritius', 'name_ar': 'موريشيوس'},
-        # المكسيك
-        'mx': {'flag': '🇲🇽', 'code': '+52', 'name': 'Mexico', 'name_ar': 'المكسيك'},
-        # ميكرونيسيا
-        'fm': {'flag': '🇫🇲', 'code': '+691', 'name': 'Micronesia', 'name_ar': 'ميكرونيسيا'},
-        # مولدوفا
-        'md': {'flag': '🇲🇩', 'code': '+373', 'name': 'Moldova', 'name_ar': 'مولدوفا'},
-        # موناكو
-        'mc': {'flag': '🇲🇨', 'code': '+377', 'name': 'Monaco', 'name_ar': 'موناكو'},
-        # منغوليا
-        'mn': {'flag': '🇲🇳', 'code': '+976', 'name': 'Mongolia', 'name_ar': 'منغوليا'},
-        # الجبل الأسود
-        'me': {'flag': '🇲🇪', 'code': '+382', 'name': 'Montenegro', 'name_ar': 'الجبل الأسود'},
-        # المغرب
-        'ma': {'flag': '🇲🇦', 'code': '+212', 'name': 'Morocco', 'name_ar': 'المغرب'},
-        # موزمبيق
-        'mz': {'flag': '🇲🇿', 'code': '+258', 'name': 'Mozambique', 'name_ar': 'موزمبيق'},
-        # ميانمار
-        'mm': {'flag': '🇲🇲', 'code': '+95', 'name': 'Myanmar', 'name_ar': 'ميانمار'},
-        # ناميبيا
-        'na': {'flag': '🇳🇦', 'code': '+264', 'name': 'Namibia', 'name_ar': 'ناميبيا'},
-        # ناورو
-        'nr': {'flag': '🇳🇷', 'code': '+674', 'name': 'Nauru', 'name_ar': 'ناورو'},
-        # نيبال
-        'np': {'flag': '🇳🇵', 'code': '+977', 'name': 'Nepal', 'name_ar': 'نيبال'},
-        # هولندا
-        'nl': {'flag': '🇳🇱', 'code': '+31', 'name': 'Netherlands', 'name_ar': 'هولندا'},
-        # نيوزيلندا
-        'nz': {'flag': '🇳🇿', 'code': '+64', 'name': 'New Zealand', 'name_ar': 'نيوزيلندا'},
-        # نيكاراغوا
-        'ni': {'flag': '🇳🇮', 'code': '+505', 'name': 'Nicaragua', 'name_ar': 'نيكاراغوا'},
-        # النيجر
-        'ne': {'flag': '🇳🇪', 'code': '+227', 'name': 'Niger', 'name_ar': 'النيجر'},
-        # نيجيريا
-        'ng': {'flag': '🇳🇬', 'code': '+234', 'name': 'Nigeria', 'name_ar': 'نيجيريا'},
-        # مقدونيا الشمالية
-        'mk': {'flag': '🇲🇰', 'code': '+389', 'name': 'North Macedonia', 'name_ar': 'مقدونيا الشمالية'},
-        # النرويج
-        'no': {'flag': '🇳🇴', 'code': '+47', 'name': 'Norway', 'name_ar': 'النرويج'},
-        # عمان
-        'om': {'flag': '🇴🇲', 'code': '+968', 'name': 'Oman', 'name_ar': 'عمان'},
-        # باكستان
-        'pk': {'flag': '🇵🇰', 'code': '+92', 'name': 'Pakistan', 'name_ar': 'باكستان'},
-        # بالاو
-        'pw': {'flag': '🇵🇼', 'code': '+680', 'name': 'Palau', 'name_ar': 'بالاو'},
-        # فلسطين
-        'ps': {'flag': '🇵🇸', 'code': '+970', 'name': 'Palestine', 'name_ar': 'فلسطين'},
-        # بنما
-        'pa': {'flag': '🇵🇦', 'code': '+507', 'name': 'Panama', 'name_ar': 'بنما'},
-        # بابوا غينيا الجديدة
-        'pg': {'flag': '🇵🇬', 'code': '+675', 'name': 'Papua New Guinea', 'name_ar': 'بابوا غينيا الجديدة'},
-        # باراغواي
-        'py': {'flag': '🇵🇾', 'code': '+595', 'name': 'Paraguay', 'name_ar': 'باراغواي'},
-        # بيرو
-        'pe': {'flag': '🇵🇪', 'code': '+51', 'name': 'Peru', 'name_ar': 'بيرو'},
-        # الفلبين
-        'ph': {'flag': '🇵🇭', 'code': '+63', 'name': 'Philippines', 'name_ar': 'الفلبين'},
-        # بولندا
-        'pl': {'flag': '🇵🇱', 'code': '+48', 'name': 'Poland', 'name_ar': 'بولندا'},
-        # البرتغال
-        'pt': {'flag': '🇵🇹', 'code': '+351', 'name': 'Portugal', 'name_ar': 'البرتغال'},
-        # قطر
-        'qa': {'flag': '🇶🇦', 'code': '+974', 'name': 'Qatar', 'name_ar': 'قطر'},
-        # رومانيا
-        'ro': {'flag': '🇷🇴', 'code': '+40', 'name': 'Romania', 'name_ar': 'رومانيا'},
-        # روسيا
-        'ru': {'flag': '🇷🇺', 'code': '+7', 'name': 'Russia', 'name_ar': 'روسيا'},
-        # رواندا
-        'rw': {'flag': '🇷🇼', 'code': '+250', 'name': 'Rwanda', 'name_ar': 'رواندا'},
-        # سانت كيتس ونيفيس
-        'kn': {'flag': '🇰🇳', 'code': '+1869', 'name': 'Saint Kitts and Nevis', 'name_ar': 'سانت كيتس ونيفيس'},
-        # سانت لوسيا
-        'lc': {'flag': '🇱🇨', 'code': '+1758', 'name': 'Saint Lucia', 'name_ar': 'سانت لوسيا'},
-        # سانت فنسنت والغرينادين
-        'vc': {'flag': '🇻🇨', 'code': '+1784', 'name': 'Saint Vincent and the Grenadines', 'name_ar': 'سانت فنسنت والغرينادين'},
-        # ساموا
-        'ws': {'flag': '🇼🇸', 'code': '+685', 'name': 'Samoa', 'name_ar': 'ساموا'},
-        # سان مارينو
-        'sm': {'flag': '🇸🇲', 'code': '+378', 'name': 'San Marino', 'name_ar': 'سان مارينو'},
-        # ساو تومي وبرينسيب
-        'st': {'flag': '🇸🇹', 'code': '+239', 'name': 'Sao Tome and Principe', 'name_ar': 'ساو تومي وبرينسيب'},
-        # السعودية
-        'sa': {'flag': '🇸🇦', 'code': '+966', 'name': 'Saudi Arabia', 'name_ar': 'السعودية'},
-        # السنغال
-        'sn': {'flag': '🇸🇳', 'code': '+221', 'name': 'Senegal', 'name_ar': 'السنغال'},
-        # صربيا
-        'rs': {'flag': '🇷🇸', 'code': '+381', 'name': 'Serbia', 'name_ar': 'صربيا'},
-        # سيشل
-        'sc': {'flag': '🇸🇨', 'code': '+248', 'name': 'Seychelles', 'name_ar': 'سيشل'},
-        # سيراليون
-        'sl': {'flag': '🇸🇱', 'code': '+232', 'name': 'Sierra Leone', 'name_ar': 'سيراليون'},
-        # سنغافورة
-        'sg': {'flag': '🇸🇬', 'code': '+65', 'name': 'Singapore', 'name_ar': 'سنغافورة'},
-        # سلوفاكيا
-        'sk': {'flag': '🇸🇰', 'code': '+421', 'name': 'Slovakia', 'name_ar': 'سلوفاكيا'},
-        # سلوفينيا
-        'si': {'flag': '🇸🇮', 'code': '+386', 'name': 'Slovenia', 'name_ar': 'سلوفينيا'},
-        # جزر سليمان
-        'sb': {'flag': '🇸🇧', 'code': '+677', 'name': 'Solomon Islands', 'name_ar': 'جزر سليمان'},
-        # الصومال
-        'so': {'flag': '🇸🇴', 'code': '+252', 'name': 'Somalia', 'name_ar': 'الصومال'},
-        # جنوب أفريقيا
-        'za': {'flag': '🇿🇦', 'code': '+27', 'name': 'South Africa', 'name_ar': 'جنوب أفريقيا'},
-        # جنوب السودان
-        'ss': {'flag': '🇸🇸', 'code': '+211', 'name': 'South Sudan', 'name_ar': 'جنوب السودان'},
-        # إسبانيا
-        'es': {'flag': '🇪🇸', 'code': '+34', 'name': 'Spain', 'name_ar': 'إسبانيا'},
-        # سريلانكا
-        'lk': {'flag': '🇱🇰', 'code': '+94', 'name': 'Sri Lanka', 'name_ar': 'سريلانكا'},
-        # السودان
-        'sd': {'flag': '🇸🇩', 'code': '+249', 'name': 'Sudan', 'name_ar': 'السودان'},
-        # سورينام
-        'sr': {'flag': '🇸🇷', 'code': '+597', 'name': 'Suriname', 'name_ar': 'سورينام'},
-        # السويد
-        'se': {'flag': '🇸🇪', 'code': '+46', 'name': 'Sweden', 'name_ar': 'السويد'},
-        # سويسرا
-        'ch': {'flag': '🇨🇭', 'code': '+41', 'name': 'Switzerland', 'name_ar': 'سويسرا'},
-        # سوريا
-        'sy': {'flag': '🇸🇾', 'code': '+963', 'name': 'Syria', 'name_ar': 'سوريا'},
-        # تايوان
-        'tw': {'flag': '🇹🇼', 'code': '+886', 'name': 'Taiwan', 'name_ar': 'تايوان'},
-        # طاجيكستان
-        'tj': {'flag': '🇹🇯', 'code': '+992', 'name': 'Tajikistan', 'name_ar': 'طاجيكستان'},
-        # تنزانيا
-        'tz': {'flag': '🇹🇿', 'code': '+255', 'name': 'Tanzania', 'name_ar': 'تنزانيا'},
-        # تايلاند
-        'th': {'flag': '🇹🇭', 'code': '+66', 'name': 'Thailand', 'name_ar': 'تايلاند'},
-        # تيمور الشرقية
-        'tl': {'flag': '🇹🇱', 'code': '+670', 'name': 'Timor-Leste', 'name_ar': 'تيمور الشرقية'},
-        # توغو
-        'tg': {'flag': '🇹🇬', 'code': '+228', 'name': 'Togo', 'name_ar': 'توغو'},
-        # تونغا
-        'to': {'flag': '🇹🇴', 'code': '+676', 'name': 'Tonga', 'name_ar': 'تونغا'},
-        # ترينيداد وتوباغو
-        'tt': {'flag': '🇹🇹', 'code': '+1868', 'name': 'Trinidad and Tobago', 'name_ar': 'ترينيداد وتوباغو'},
-        # تونس
-        'tn': {'flag': '🇹🇳', 'code': '+216', 'name': 'Tunisia', 'name_ar': 'تونس'},
-        # تركيا
-        'tr': {'flag': '🇹🇷', 'code': '+90', 'name': 'Turkey', 'name_ar': 'تركيا'},
-        # تركمانستان
-        'tm': {'flag': '🇹🇲', 'code': '+993', 'name': 'Turkmenistan', 'name_ar': 'تركمانستان'},
-        # توفالو
-        'tv': {'flag': '🇹🇻', 'code': '+688', 'name': 'Tuvalu', 'name_ar': 'توفالو'},
-        # أوغندا
-        'ug': {'flag': '🇺🇬', 'code': '+256', 'name': 'Uganda', 'name_ar': 'أوغندا'},
-        # أوكرانيا
-        'ua': {'flag': '🇺🇦', 'code': '+380', 'name': 'Ukraine', 'name_ar': 'أوكرانيا'},
-        # الإمارات العربية المتحدة
-        'ae': {'flag': '🇦🇪', 'code': '+971', 'name': 'UAE', 'name_ar': 'الإمارات'},
-        # المملكة المتحدة
-        'gb': {'flag': '🇬🇧', 'code': '+44', 'name': 'United Kingdom', 'name_ar': 'المملكة المتحدة'},
-        # الولايات المتحدة
-        'us': {'flag': '🇺🇸', 'code': '+1', 'name': 'United States', 'name_ar': 'الولايات المتحدة'},
-        # أوروغواي
-        'uy': {'flag': '🇺🇾', 'code': '+598', 'name': 'Uruguay', 'name_ar': 'أوروغواي'},
-        # أوزبكستان
-        'uz': {'flag': '🇺🇿', 'code': '+998', 'name': 'Uzbekistan', 'name_ar': 'أوزبكستان'},
-        # فانواتو
-        'vu': {'flag': '🇻🇺', 'code': '+678', 'name': 'Vanuatu', 'name_ar': 'فانواتو'},
-        # الفاتيكان
-        'va': {'flag': '🇻🇦', 'code': '+379', 'name': 'Vatican City', 'name_ar': 'الفاتيكان'},
-        # فنزويلا
-        've': {'flag': '🇻🇪', 'code': '+58', 'name': 'Venezuela', 'name_ar': 'فنزويلا'},
-        # فيتنام
-        'vn': {'flag': '🇻🇳', 'code': '+84', 'name': 'Vietnam', 'name_ar': 'فيتنام'},
-        # اليمن
-        'ye': {'flag': '🇾🇪', 'code': '+967', 'name': 'Yemen', 'name_ar': 'اليمن'},
-        # زامبيا
-        'zm': {'flag': '🇿🇲', 'code': '+260', 'name': 'Zambia', 'name_ar': 'زامبيا'},
-        # زيمبابوي
-        'zw': {'flag': '🇿🇼', 'code': '+263', 'name': 'Zimbabwe', 'name_ar': 'زيمبابوي'},
-        # كوسوفو
-        'xk': {'flag': '🇽🇰', 'code': '+383', 'name': 'Kosovo', 'name_ar': 'كوسوفو'},
-        # الصحراء الغربية
-        'eh': {'flag': '🇪🇭', 'code': '+212', 'name': 'Western Sahara', 'name_ar': 'الصحراء الغربية'},
-        # أرض الصومال
-        'somaliland': {'flag': '🇸🇴', 'code': '+252', 'name': 'Somaliland', 'name_ar': 'أرض الصومال'},
-        # هونغ كونغ
-        'hk': {'flag': '🇭🇰', 'code': '+852', 'name': 'Hong Kong', 'name_ar': 'هونغ كونغ'},
-        # ماكاو
-        'mo': {'flag': '🇲🇴', 'code': '+853', 'name': 'Macau', 'name_ar': 'ماكاو'},
-        # بورتوريكو
-        'pr': {'flag': '🇵🇷', 'code': '+1787', 'name': 'Puerto Rico', 'name_ar': 'بورتوريكو'},
-        # غوام
-        'gu': {'flag': '🇬🇺', 'code': '+1671', 'name': 'Guam', 'name_ar': 'غوام'},
-        # برمودا
-        'bm': {'flag': '🇧🇲', 'code': '+1441', 'name': 'Bermuda', 'name_ar': 'برمودا'},
-        # جزر كايمان
-        'ky': {'flag': '🇰🇾', 'code': '+1345', 'name': 'Cayman Islands', 'name_ar': 'جزر كايمان'},
-        # جزر فيرجن البريطانية
-        'vg': {'flag': '🇻🇬', 'code': '+1284', 'name': 'British Virgin Islands', 'name_ar': 'جزر فيرجن البريطانية'},
-        # جزر فيرجن الأمريكية
-        'vi': {'flag': '🇻🇮', 'code': '+1340', 'name': 'US Virgin Islands', 'name_ar': 'جزر فيرجن الأمريكية'},
-        # جبل طارق
-        'gi': {'flag': '🇬🇮', 'code': '+350', 'name': 'Gibraltar', 'name_ar': 'جبل طارق'},
-        # جزر فارو
-        'fo': {'flag': '🇫🇴', 'code': '+298', 'name': 'Faroe Islands', 'name_ar': 'جزر فارو'},
-        # جرينلاند
-        'gl': {'flag': '🇬🇱', 'code': '+299', 'name': 'Greenland', 'name_ar': 'جرينلاند'},
-        # أروبا
-        'aw': {'flag': '🇦🇼', 'code': '+297', 'name': 'Aruba', 'name_ar': 'أروبا'},
-        # كوراساو
-        'cw': {'flag': '🇨🇼', 'code': '+599', 'name': 'Curacao', 'name_ar': 'كوراساو'},
-        # سانت مارتن
-        'sx': {'flag': '🇸🇽', 'code': '+1721', 'name': 'Sint Maarten', 'name_ar': 'سانت مارتن'},
-        # بونير
-        'bq': {'flag': '🇧🇶', 'code': '+599', 'name': 'Bonaire', 'name_ar': 'بونير'},
-        # أنغويلا
-        'ai': {'flag': '🇦🇮', 'code': '+1264', 'name': 'Anguilla', 'name_ar': 'أنغويلا'},
-        # مونتسيرات
-        'ms': {'flag': '🇲🇸', 'code': '+1664', 'name': 'Montserrat', 'name_ar': 'مونتسيرات'},
-        # جزر توركس وكايكوس
-        'tc': {'flag': '🇹🇨', 'code': '+1649', 'name': 'Turks and Caicos', 'name_ar': 'جزر توركس وكايكوس'},
-        # سانت بيير وميكلون
-        'pm': {'flag': '🇵🇲', 'code': '+508', 'name': 'Saint Pierre and Miquelon', 'name_ar': 'سانت بيير وميكلون'},
-        # جزر فوكلاند
-        'fk': {'flag': '🇫🇰', 'code': '+500', 'name': 'Falkland Islands', 'name_ar': 'جزر فوكلاند'},
-        # بولينيزيا الفرنسية
-        'pf': {'flag': '🇵🇫', 'code': '+689', 'name': 'French Polynesia', 'name_ar': 'بولينيزيا الفرنسية'},
-        # كاليدونيا الجديدة
-        'nc': {'flag': '🇳🇨', 'code': '+687', 'name': 'New Caledonia', 'name_ar': 'كاليدونيا الجديدة'},
-        # واليس وفوتونا
-        'wf': {'flag': '🇼🇫', 'code': '+681', 'name': 'Wallis and Futuna', 'name_ar': 'واليس وفوتونا'},
-        # جزر كوك
-        'ck': {'flag': '🇨🇰', 'code': '+682', 'name': 'Cook Islands', 'name_ar': 'جزر كوك'},
-        # نييوي
-        'nu': {'flag': '🇳🇺', 'code': '+683', 'name': 'Niue', 'name_ar': 'نييوي'},
-        # توكيلاو
-        'tk': {'flag': '🇹🇰', 'code': '+690', 'name': 'Tokelau', 'name_ar': 'توكيلاو'},
-        # جزيرة نورفولك
-        'nf': {'flag': '🇳🇫', 'code': '+672', 'name': 'Norfolk Island', 'name_ar': 'جزيرة نورفولك'},
-        # جزيرة كريسماس
-        'cx': {'flag': '🇨🇽', 'code': '+61', 'name': 'Christmas Island', 'name_ar': 'جزيرة كريسماس'},
-        # جزر كوكوس
-        'cc': {'flag': '🇨🇨', 'code': '+61', 'name': 'Cocos Islands', 'name_ar': 'جزر كوكوس'},
-    }
-    
-    def extract_country_info(text):
-        import re
-        text_lower = text.lower()
-        
-        hashtag_match = re.search(r'#([A-Za-z]{2,3})\b', text)
-        if hashtag_match:
-            try:
-                code = hashtag_match.group(1).lower()
-                if code in COUNTRIES_DB:
-                    return COUNTRIES_DB[code]['flag'], COUNTRIES_DB[code]['code'], COUNTRIES_DB[code]['name']
-            except:
-                pass
-        
-        for key, data in COUNTRIES_DB.items():
-            if data['name'].lower() in text_lower or data['name_ar'] in text:
-                return data['flag'], data['code'], data['name']
-        
-        code_match = re.search(r'\+(\d{1,3})\b', text)
-        if code_match:
-            try:
-                dial_code = '+' + code_match.group(1)
-                for key, data in COUNTRIES_DB.items():
-                    if data['code'] == dial_code:
-                        return data['flag'], data['code'], data['name']
-            except:
-                pass
-        
-        for key, data in COUNTRIES_DB.items():
-            if data['flag'] in text:
-                return data['flag'], data['code'], data['name']
-        
-        return '🌍', '', 'Unknown'
-    
-    def extract_phone_number(text):
-        import re
-        
-        if not text:
-            return '—'
-        
-        patterns = [
-            r'([A-Za-z]?\d{8,15})',
-            r'(\+\d{1,3}[\s.-]?\d{8,15})',
-            r'(\d{2,3}[•*]{2,}\d{3,5})',
-            r'\b(\d{8,15})\b',
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, text)
-            if match:
-                try:
-                    number = match.group(1) if match.lastindex and match.lastindex >= 1 else match.group(0)
-                except:
-                    number = match.group(0)
-                
-                if '•' in number or '*' in number:
-                    return number
-                
-                number = re.sub(r'[\s.\-]', '', number)
-                number = re.sub(r'^[A-Za-z]+', '', number)
-                
-                if len(number) < 8:
-                    continue
-                
-                if len(number) > 8:
-                    return number[:4] + '••••' + number[-4:]
-                elif len(number) > 4:
-                    return number[:2] + '••' + number[-2:]
-                else:
-                    return '••••'
-        
-        return '—'
-    
-    def extract_cli_info(text):
-        text_lower = text.lower()
-        cli_map = {
-            'whatsapp': '📱 WhatsApp', 'واتساب': '📱 WhatsApp', 'واتس': '📱 WhatsApp',
-            'telegram': '✈️ Telegram', 'تيليجرام': '✈️ Telegram',
-            'viber': '📞 Viber', 'فايبر': '📞 Viber',
-            'signal': '🔒 Signal',
-            'tinder': '🔥 Tinder',
-            'tiktok': '🎵 TikTok',
-            'google': '𝐆 Google',
-            'facebook': '𝐟 Facebook',
-            'instagram': '📷 Instagram',
-            'snapchat': '👻 Snapchat',
-            'twitter': '🐦 X', 'x.com': '🐦 X',
-            'binance': '₿ Binance',
-            'paypal': '💰 PayPal',
-            'amazon': '📦 Amazon',
-            'netflix': '🎬 Netflix',
-            'uber': '🚗 Uber',
-            'code': '🔐 OTP', 'otp': '🔐 OTP', 'verify': '🔐 OTP', 'رمز': '🔐 OTP', 'كود': '🔐 OTP',
-        }
-        for key, value in cli_map.items():
-            if key in text_lower:
-                return value
-        return '📨 SMS'
-    
-    def extract_clean_message(text, flag, country_code, number):
-        import re
-        clean = text
-        
-        if flag != '🌍':
-            clean = clean.replace(flag, '')
-        
-        clean = re.sub(r'#[A-Za-z]{2,3}\s*', '', clean)
-        clean = re.sub(r'\+\d{1,3}\s*', '', clean)
-        clean = re.sub(r'\b\d{8,15}\b', '', clean)
-        clean = re.sub(r'\d{2,3}[•*]{2,}\d{3,5}', '', clean)
-        clean = re.sub(r'\s+', ' ', clean).strip()
-        
-        code = extract_otp_from_message(text)
-        if code:
-            if len(clean) > 50:
-                return f'{clean[:50]}... <span style="background: #9d4edd; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; margin-right: 5px;">🔐 {code}</span>'
-            else:
-                return f'{clean} <span style="background: #9d4edd; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; margin-right: 5px;">🔐 {code}</span>'
-        
-        return clean[:80] + '...' if len(clean) > 80 else clean
+    last_sync_time = last_sync[0] if last_sync else 'Never'
     
     rows = ''
-    total_payout = 0
     for m in messages:
         text = m[0]
-        msg_date = m[1][:19] if m[1] else ''
+        date = m[1][:19] if m[1] else ''
         
-        flag, dial_code, country_name = extract_country_info(text)
-        number = extract_phone_number(text)
-        cli = extract_cli_info(text)
-        message = extract_clean_message(text, flag, dial_code, number)
-        payout = 0.01
-        total_payout += payout
+        # استخراج الرقم
+        num = '—'
+        nums = re.findall(r'\d{8,15}', re.sub(r'[^\d]', ' ', text))
+        if nums:
+            n = max(nums, key=len)
+            num = n[:4] + '••••' + n[-4:]
         
-        display_name = country_name
-        if lang == 'ar':
-            for key, data in COUNTRIES_DB.items():
-                if data['name'] == country_name:
-                    display_name = data['name_ar']
+        # CLI
+        tl = text.lower()
+        cli = 'SMS'
+        if 'whatsapp' in tl or 'واتساب' in tl: cli = 'WhatsApp'
+        elif 'telegram' in tl: cli = 'Telegram'
+        elif 'code' in tl or 'otp' in tl or 'verify' in tl: cli = 'OTP'
+        
+        # Range - اسم الملف المرتبط بالرقم
+        range_name = 'Unknown'
+        # البحث عن الرقم في user_numbers لمعرفة الملف
+        cursor.execute("SELECT nf.display_name FROM user_numbers un JOIN number_files nf ON un.file_id = nf.id WHERE un.number = ?", (num.replace('••••', ''),))
+        file_row = cursor.fetchone()
+        if file_row:
+            range_name = file_row[0]
+        else:
+            # البحث بأي رقم في النص
+            all_nums = re.findall(r'\d{8,15}', re.sub(r'[^\d]', ' ', text))
+            for full_num in all_nums:
+                cursor.execute("SELECT nf.display_name FROM user_numbers un JOIN number_files nf ON un.file_id = nf.id WHERE un.number = ?", (full_num,))
+                file_row = cursor.fetchone()
+                if file_row:
+                    range_name = file_row[0]
                     break
         
-        rows += f'''
-            <tr>
-                <td style="white-space: nowrap;">{msg_date}</td>
-                <td style="white-space: nowrap;">
-                    <span style="display: flex; align-items: center; gap: 8px;">
-                        <span style="font-size: 1.4rem;">{flag}</span>
-                        <span style="font-weight: 500;">{display_name}</span>
-                    </span>
-                </td>
-                <td style="direction: ltr; font-family: 'Courier New', monospace;">{number}</td>
-                <td><span class="cli-badge">{cli}</span></td>
-                <td style="max-width: 400px;">{message}</td>
-                <td style="color: #2cc185; font-weight: 600;">$ {payout:.2f}</td>
-            </tr>
-        '''
+        # تنظيف النص
+        clean = text[:100].replace('\n', ' ')
+        
+        rows += '<tr><td>' + date + '</td><td>' + range_name + '</td><td>' + num + '</td><td>' + cli + '</td><td>' + clean + '</td></tr>'
     
-    empty_message = '''
-    <tr>
-        <td colspan="6" style="text-align: center; padding: 50px;">
-            <i class="far fa-comment-dots" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>
-            <span style="color: #8b6baf;">No messages found</span>
-        </td>
-    </tr>
-    '''
+    if not rows:
+        rows = '<tr><td colspan="5" style="text-align:center;padding:40px;">No messages found</td></tr>'
     
-    table_body = rows if rows else empty_message
+    username = session.get('username', 'U')
+    avatar = username[0].upper()
     
-    return f'''
-<!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+    html = '''<!DOCTYPE html>
+<html lang="ar" dir="rtl">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Show Records - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style('light')}
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Public SMS - Selva Panel</title>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
     <style>
-        * {{ box-sizing: border-box; }}
-        body {{ background: #f8f9fc; }}
-        .records-container {{ max-width: 100% !important; width: 100% !important; padding: 15px 20px !important; margin: 0 !important; }}
-        .page-header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 15px; }}
-        .page-header h1 {{ margin: 0; font-size: 1.8rem; display: flex; align-items: center; gap: 15px; color: #4a1d6e; }}
-        .total-badge {{ background: #f0e8fa; padding: 6px 15px; border-radius: 30px; font-size: 0.9rem; color: #5a189a; border: 1px solid #d9c2f0; }}
-        .table-wrapper {{ overflow-x: auto; border-radius: 16px; background: #ffffff; border: 1px solid #e8e0f0; box-shadow: 0 4px 12px rgba(0,0,0,0.04); margin-bottom: 20px; }}
-        .records-table {{ width: 100%; border-collapse: collapse; min-width: 1100px; font-size: 0.9rem; }}
-        .records-table th {{ background: #f8f5ff; padding: 14px 12px; font-weight: 600; text-transform: uppercase; font-size: 0.8rem; letter-spacing: 0.5px; border-bottom: 2px solid #d9c2f0; white-space: nowrap; color: #5a189a; }}
-        .records-table td {{ padding: 12px; border-bottom: 1px solid #f0e8fa; vertical-align: middle; color: #1a1a2e; }}
-        .records-table tr:hover td {{ background: #fdfbff; }}
-        .cli-badge {{ display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; background: #f0e8fa; color: #5a189a; white-space: nowrap; }}
-        .table-footer {{ display: flex; justify-content: space-between; align-items: center; margin-top: 15px; flex-wrap: wrap; gap: 15px; }}
-        .total-info {{ background: #e8faf1; padding: 10px 20px; border-radius: 30px; border: 1px solid #2cc185; color: #1a1a2e; }}
-        .total-info strong {{ color: #2cc185; font-size: 1.3rem; margin: 0 10px; }}
-        .pagination {{ display: flex; gap: 5px; }}
-        .pagination button {{ padding: 8px 15px; background: #ffffff; border: 1px solid #d9c2f0; border-radius: 8px; color: #4a1d6e; cursor: pointer; font-weight: 500; transition: all 0.2s; }}
-        .pagination button:hover {{ background: #9d4edd; color: white; border-color: #9d4edd; }}
-        .action-bar {{ display: flex; gap: 10px; }}
-        .btn-success {{ background: #2cc185; box-shadow: 0 4px 10px rgba(44, 193, 133, 0.2); }}
-        .btn-success:hover {{ background: #25a86f; }}
-        .records-table th:nth-child(1) {{ width: 160px; }}
-        .records-table th:nth-child(2) {{ width: 180px; }}
-        .records-table th:nth-child(3) {{ width: 140px; }}
-        .records-table th:nth-child(4) {{ width: 110px; }}
-        .records-table th:nth-child(6) {{ width: 100px; }}
-        .header {{ background: #ffffff; border-bottom: 1px solid #e8e0f0; box-shadow: 0 2px 8px rgba(0,0,0,0.02); }}
-        .back-btn {{ background: #f8f5ff; color: #5a189a; border: 1px solid #d9c2f0; }}
-        @media (max-width: 768px) {{ .records-container {{ padding: 10px !important; }} .page-header {{ flex-direction: column; align-items: flex-start; }} }}
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:'Roboto',sans-serif;background:#667eea;color:#333}
+        .container{display:flex;min-height:100vh}
+        .sidebar{width:280px;background:#4a5fd5;color:#fff;padding:20px 0;position:fixed;height:100vh;overflow-y:auto}
+        .sidebar-header{padding:20px;border-bottom:2px solid rgba(255,255,255,0.1)}
+        .sidebar-header h2{font-size:18px;color:#fff}
+        .sidebar-menu{list-style:none}
+        .sidebar-menu a{display:block;padding:12px 20px;color:#fff;text-decoration:none;font-size:13px;border-left:3px solid transparent}
+        .sidebar-menu a:hover{background:rgba(255,255,255,0.15)}
+        .sidebar-menu a.active{background:rgba(255,255,255,0.25);border-left-color:#fff}
+        .main-content{margin-left:280px;flex:1}
+        .topbar{background:#4a5fd5;color:#fff;padding:15px 25px;display:flex;justify-content:space-between}
+        .content{padding:25px;background:#f5f5f5}
+        .page-title{font-size:28px;font-weight:bold;color:#fff;margin-bottom:20px}
+        .btn{padding:12px 24px;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:14px;margin:0 5px}
+        .btn-sync{background:#28a745;color:#fff}
+        .btn-refresh{background:#ffc107;color:#333}
+        .table-container{background:#fff;border-radius:8px;overflow:hidden;margin-top:20px;overflow-x:auto}
+        table{width:100%;border-collapse:collapse;min-width:800px}
+        thead{background:#667eea;color:#fff}
+        th{padding:15px;text-align:right;font-size:12px;text-transform:uppercase}
+        td{padding:15px;border-bottom:1px solid #f0f0f0;font-size:13px}
+        tbody tr:hover{background:#f8f9fa}
+        @media(max-width:768px){.sidebar{width:0}.main-content{margin-left:0}}
     </style>
 </head>
 <body>
-    <div class="header">
-        <div style="display: flex; align-items: center; gap: 15px;">
-            <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        </div>
-        <div style="display: flex; align-items: center; gap: 10px;">
-            <span id="syncStatus"></span>
-            <span class="total-badge"><i class="far fa-clock"></i> {last_sync_time}</span>
-        </div>
-    </div>
-    
-    <div class="container records-container">
-        <div class="page-header">
-            <h1><i class="fas fa-table" style="color: #9d4edd;"></i> Show Records</h1>
-            <div class="action-bar">
-                <button class="btn btn-success" onclick="syncMessages()" id="syncBtn"><i class="fas fa-cloud-download-alt"></i> Sync</button>
-                <button class="btn" onclick="location.reload()"><i class="fas fa-redo-alt"></i> Refresh</button>
-            </div>
-        </div>
-        
-        <div class="table-wrapper">
-            <table class="records-table">
-                <thead>
-                    <tr>
-                        <th>Date</th>
-                        <th>Range</th>
-                        <th>Number</th>
-                        <th>CLI</th>
-                        <th>SMS</th>
-                        <th>My Payout</th>
-                    </tr>
-                </thead>
-                <tbody>{table_body}</tbody>
-            </table>
-        </div>
-        
-        <div class="table-footer">
-            <div class="total-info">
-                <i class="fas fa-envelope"></i> Total SMS <strong>{len(messages)}</strong>
-                <span style="margin: 0 15px; opacity: 0.5;">|</span>
-                <i class="fas fa-dollar-sign"></i> Total Payout <strong>$ {total_payout:.2f}</strong>
-            </div>
-            <div class="pagination">
-                <button><i class="fas fa-angle-double-left"></i> First</button>
-                <button><i class="fas fa-angle-left"></i> Previous</button>
-                <button style="background: #9d4edd; color: white; border-color: #9d4edd;">1</button>
-                <button><i class="fas fa-angle-right"></i> Next</button>
-                <button>Last <i class="fas fa-angle-double-right"></i></button>
-            </div>
-        </div>
-        
-        <div style="text-align: center; margin-top: 15px; color: #8b6baf; font-size: 0.85rem;">
-            Showing 1 to {len(messages)} of {len(messages)} entries
-        </div>
-    </div>
-    
-    <script>
-        async function syncMessages() {{
-            const btn = document.getElementById('syncBtn');
-            const statusEl = document.getElementById('syncStatus');
-            const originalText = btn.innerHTML;
-            
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...';
-            statusEl.innerHTML = '<span style="color: #fdb44b;"><i class="fas fa-spinner fa-spin"></i> Syncing...</span>';
-            
-            try {{
-                const r = await fetch('/api/sync');
-                const d = await r.json();
-                if (d.success) {{
-                    statusEl.innerHTML = '<span style="color: #2cc185;"><i class="fas fa-check-circle"></i> +' + d.new_messages + ' new</span>';
-                    setTimeout(() => location.reload(), 1500);
-                }} else {{
-                    statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> Error</span>';
-                    btn.disabled = false;
-                    btn.innerHTML = originalText;
-                }}
-            }} catch(e) {{
-                statusEl.innerHTML = '<span style="color: #ff5e5e;"><i class="fas fa-times-circle"></i> Error</span>';
-                btn.disabled = false;
-                btn.innerHTML = originalText;
-            }}
-        }}
-        
-        setInterval(function() {{
-            fetch('/api/sync').then(r => r.json()).then(d => {{ if (d.success && d.new_messages > 0) location.reload(); }});
-        }}, 30000);
-    </script>
+<div class="container">
+<aside class="sidebar">
+<div class="sidebar-header"><h2>Selva Panel</h2></div>
+<ul class="sidebar-menu">
+<li><a href="/dashboard">Dashboard</a></li>
+<li><a href="/user/my-sms">My SMS</a></li>
+<li><a href="/user/public-sms" class="active">Public SMS</a></li>
+<li><a href="/user/my-number">My Numbers</a></li>
+<li><a href="/logout">Logout</a></li>
+</ul>
+</aside>
+<div class="main-content">
+<div class="topbar"><div class="topbar-title">Public SMS</div></div>
+<div class="content">
+<h1 class="page-title">Public SMS</h1>
+<button class="btn btn-sync" onclick="syncMessages()">Sync</button>
+<button class="btn btn-refresh" onclick="location.reload()">Refresh</button>
+<span style="color:#fff;margin-left:10px;">Last Sync: ''' + last_sync_time + '''</span>
+<div class="table-container"><table>
+<thead><tr><th>Date</th><th>Range</th><th>Number</th><th>CLI</th><th>SMS</th></tr></thead>
+<tbody>''' + rows + '''</tbody>
+</table></div>
+</div>
+</div>
+</div>
+<script>
+async function syncMessages(){var b=document.querySelector(".btn-sync");b.disabled=true;b.innerHTML="Syncing...";try{var r=await fetch("/api/sync"),d=await r.json();if(d.success){setTimeout(function(){location.reload();},1000);}else{b.disabled=false;b.innerHTML="Sync";}}catch(e){b.disabled=false;b.innerHTML="Sync";}}
+</script>
 </body>
-</html>
-'''
+</html>'''
+    
+    return html
 @app.route('/user/my-file')
 @login_required
 def user_my_file_page():
@@ -4586,8 +4162,6 @@ def owner_delete_test_number(file_id):
 def user_my_number_page():
     user_id = session['user_id']
     lang = session.get('lang', 'ar')
-    t = LANGUAGES[lang]
-    theme = 'light'
     
     filter_file = request.args.get('file', 'all')
     
@@ -4648,179 +4222,348 @@ def user_my_number_page():
         ''', (user_id,))
         available_files = [row[0] for row in cursor.fetchall()]
     
-    numbers_count = len(numbers)
-    
+    # إحصائيات
     if is_client(user_id):
         cursor.execute('''
-            SELECT nf.display_name, COUNT(*) as count, cn.file_id
+            SELECT nf.display_name, COUNT(*) as count
             FROM client_numbers cn
             LEFT JOIN number_files nf ON cn.file_id = nf.id
             WHERE cn.client_id = ?
-            GROUP BY nf.display_name, cn.file_id
+            GROUP BY nf.display_name
         ''', (user_id,))
     else:
         cursor.execute('''
-            SELECT nf.display_name, COUNT(*) as count, un.file_id
+            SELECT nf.display_name, COUNT(*) as count
             FROM user_numbers un
             LEFT JOIN number_files nf ON un.file_id = nf.id
             WHERE un.user_id = ?
-            GROUP BY nf.display_name, un.file_id
+            GROUP BY nf.display_name
         ''', (user_id,))
     file_stats_data = cursor.fetchall()
     
-    file_stats = {}
     total_all_numbers = 0
     for row in file_stats_data:
-        file_name = row[0] or t['unknown']
-        count = row[1]
-        file_id = row[2]
-        file_stats[file_name] = {'count': count, 'file_id': file_id}
-        total_all_numbers += count
+        total_all_numbers += row[1]
     
+    # بناء صفوف الجدول
     rows = ''
     for n in numbers:
+        number = n[0] if n[0] else ''
+        file_name = n[1] if n[1] else 'Unknown'
+        prefix = number[:6] if len(number) >= 6 else number[:3]
+        date_added = n[2][:16] if n[2] else ''
+        
         rows += f'''
             <tr>
-                <td style="direction: ltr; font-family: monospace; font-size: 1.1rem;">{n[0]}</td>
-                <td><span style="display: flex; align-items: center; gap: 5px;"><i class="fas fa-folder" style="color: #9d4edd;"></i>{n[1] or t['unknown']}</span></td>
-                <td style="white-space: nowrap;">{n[2][:16] if n[2] else ''}</td>
+                <td class="checkbox-col"><input type="checkbox"></td>
+                <td>{file_name}</td>
+                <td>{prefix}</td>
+                <td>{number}</td>
+                <td><span class="payout-badge">$ 0.01</span></td>
+                <td>{date_added}</td>
+                <td><button class="action-btn" onclick="copyNumber('{number}')">📋 Copy</button></td>
             </tr>
         '''
     
-    files_summary = ''
-    for file_name, stats in file_stats.items():
-        files_summary += f'''
-            <div class="stat-card" style="text-align: center; cursor: pointer;" onclick="window.location.href='/user/my-number?file={file_name}'">
-                <i class="fas fa-folder" style="font-size: 1.5rem; color: #9d4edd; margin-bottom: 8px;"></i>
-                <h4 style="margin: 5px 0;">{file_name}</h4>
-                <div class="number" style="font-size: 1.5rem;">{stats['count']}</div>
-                <small>رقم</small>
-                <div style="margin-top: 5px;"><span class="badge badge-success">{stats['count']}</span></div>
-            </div>
-        '''
+    if not rows:
+        rows = f'<tr><td colspan="7" style="text-align: center; padding: 40px; color: #6c757d;">لا توجد أرقام مضافة بعد</td></tr>'
     
+    # بناء خيارات الفلتر
     filter_options = '<option value="all">📋 جميع الملفات</option>'
     for file_name in available_files:
         selected = 'selected' if file_name == filter_file else ''
         filter_options += f'<option value="{file_name}" {selected}>📁 {file_name}</option>'
     
-    page_title = f'أرقام ملف: {filter_file}' if filter_file != 'all' else 'جميع الأرقام'
-    
-    # ============================================================
-    # المتغيرات المساعدة (لتجنب f-string متعدد الأسطر)
-    # ============================================================
-    
-    empty_numbers_row = f'''<tr>
-                            <td colspan="3" style="text-align: center; padding: 50px;">
-                                <i class="fas fa-phone-slash" style="font-size: 3rem; color: #d9c2f0; margin-bottom: 15px; display: block;"></i>
-                                <p style="color: #8b6baf;">{t["no_numbers"]}</p>
-                            </td>
-                        </tr>'''
-    
-    add_number_button = f'''<div class="action-buttons">
-            <a href="/user/add-number" class="btn btn-success"><i class="fas fa-plus"></i> {t['add_number']}</a>
-        </div>'''
-    
     return f'''
 <!DOCTYPE html>
-<html dir="{'rtl' if lang == 'ar' else 'ltr'}">
+<html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{t['my_number']} - {t['app_name']}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    {get_base_style(theme)}
+    <title>My SMS Numbers - SELVA PANEL</title>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
     <style>
-        .header {{ background: #ffffff; border-bottom: 1px solid #e8e0f0; }}
-        .main-stats {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 25px; }}
-        .main-stat-card {{ background: linear-gradient(135deg, #9d4edd, #7b2cbf); color: white; padding: 20px; border-radius: 20px; text-align: center; }}
-        .main-stat-card h3 {{ color: white; margin-bottom: 10px; font-size: 1rem; }}
-        .main-stat-card .number {{ font-size: 2.5rem; font-weight: bold; }}
-        .files-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 15px; margin: 20px 0; }}
-        .table-wrapper {{ overflow-x: auto; border-radius: 16px; background: #ffffff; border: 1px solid #e8e0f0; max-height: 600px; overflow-y: auto; }}
-        .numbers-table {{ width: 100%; border-collapse: collapse; min-width: 600px; }}
-        .numbers-table th {{ background: #f8f5ff; padding: 14px 15px; font-weight: 600; color: #5a189a; border-bottom: 2px solid #d9c2f0; position: sticky; top: 0; z-index: 10; }}
-        .numbers-table td {{ padding: 12px 15px; border-bottom: 1px solid #f0e8fa; }}
-        .numbers-table tr:hover td {{ background: #fdfbff; }}
-        .action-buttons {{ display: flex; gap: 10px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }}
-        .filter-section {{ display: flex; align-items: center; gap: 15px; margin-bottom: 20px; flex-wrap: wrap; }}
-        .filter-select {{ padding: 10px 15px; border: 1px solid #d9c2f0; border-radius: 10px; background: #ffffff; color: #4a1d6e; font-size: 1rem; cursor: pointer; min-width: 250px; }}
-        .filter-select:focus {{ outline: none; border-color: #9d4edd; }}
-        .filter-badge {{ background: #9d4edd; color: white; padding: 8px 15px; border-radius: 10px; font-size: 0.9rem; }}
-        .reset-filter {{ background: #f0e8fa; color: #5a189a; padding: 8px 15px; border-radius: 10px; text-decoration: none; font-size: 0.9rem; border: 1px solid #d9c2f0; }}
-        .reset-filter:hover {{ background: #9d4edd; color: white; }}
-        .stat-card:hover {{ transform: translateY(-3px); box-shadow: 0 8px 20px rgba(157, 78, 221, 0.15); transition: all 0.2s; }}
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: 'Roboto', sans-serif; background-color: #f0f2f5; color: #333; }}
+        
+        .container {{ display: flex; min-height: 100vh; }}
+        
+        .sidebar {{
+            width: 250px;
+            background: linear-gradient(180deg, #003D7A 0%, #002850 100%);
+            color: white;
+            padding: 20px 0;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+            box-shadow: 2px 0 10px rgba(0, 0, 0, 0.15);
+        }}
+        
+        .sidebar-header {{ padding: 15px 20px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); margin-bottom: 10px; }}
+        .sidebar-header h2 {{ font-size: 18px; color: #17A2B8; margin-bottom: 5px; font-family: 'Poppins', sans-serif; }}
+        .sidebar-header p {{ font-size: 12px; color: rgba(255, 255, 255, 0.7); }}
+        
+        .sidebar-menu {{ list-style: none; }}
+        .sidebar-menu a {{
+            display: block;
+            padding: 12px 20px;
+            color: white;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            font-size: 13px;
+            font-weight: 500;
+            border-left: 3px solid transparent;
+        }}
+        .sidebar-menu a:hover {{ background-color: rgba(23, 162, 184, 0.2); padding-left: 24px; }}
+        .sidebar-menu a.active {{ background-color: #17A2B8; border-left-color: #17A2B8; }}
+        
+        .main-content {{ margin-left: 250px; flex: 1; display: flex; flex-direction: column; }}
+        
+        .topbar {{
+            background: linear-gradient(90deg, #17A2B8 0%, #0056b3 100%);
+            color: white;
+            padding: 15px 25px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }}
+        
+        .topbar-title {{ font-size: 20px; font-weight: bold; font-family: 'Poppins', sans-serif; }}
+        
+        .user-avatar {{
+            width: 40px; height: 40px; border-radius: 50%;
+            background: rgba(255, 255, 255, 0.3);
+            display: flex; align-items: center; justify-content: center;
+            font-weight: bold; font-size: 18px;
+        }}
+        
+        .breadcrumb {{
+            padding: 15px 25px; background: white; border-bottom: 1px solid #dee2e6;
+            font-size: 13px; color: #6c757d;
+        }}
+        .breadcrumb a {{ color: #17A2B8; text-decoration: none; margin: 0 5px; }}
+        
+        .content {{ flex: 1; padding: 25px; overflow-y: auto; }}
+        
+        .page-title {{ font-size: 24px; font-weight: bold; color: #1a1a1a; margin-bottom: 10px; font-family: 'Poppins', sans-serif; }}
+        .page-description {{ color: #6c757d; font-size: 13px; margin-bottom: 20px; }}
+        
+        .stats-grid {{
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px; margin-bottom: 20px;
+        }}
+        
+        .stat-card {{
+            background: white; padding: 20px; border-radius: 6px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05); text-align: center;
+        }}
+        
+        .stat-card .stat-value {{ font-size: 28px; font-weight: bold; color: #17A2B8; }}
+        .stat-card .stat-label {{ font-size: 12px; color: #6c757d; margin-top: 5px; }}
+        
+        .filter-section {{
+            background: white; padding: 20px; border-radius: 6px; margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }}
+        
+        .filter-row {{ display: flex; gap: 15px; align-items: flex-end; flex-wrap: wrap; }}
+        
+        .filter-group {{ display: flex; flex-direction: column; flex: 1; min-width: 200px; }}
+        .filter-group label {{ font-size: 12px; font-weight: 600; color: #1a1a1a; margin-bottom: 6px; text-transform: uppercase; }}
+        .filter-group select {{
+            padding: 8px 12px; border: 1px solid #dee2e6; border-radius: 4px;
+            font-size: 13px; font-family: 'Roboto', sans-serif;
+        }}
+        
+        .btn-filter {{
+            padding: 8px 20px; background-color: #dc3545; color: white; border: none;
+            border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 13px;
+        }}
+        
+        .toolbar {{
+            background: white; padding: 15px 20px; border-radius: 6px; margin-bottom: 15px;
+            display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;
+            gap: 10px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }}
+        
+        .toolbar-right {{ display: flex; gap: 8px; align-items: center; }}
+        .search-box {{ padding: 8px 12px; border: 1px solid #dee2e6; border-radius: 4px; font-size: 13px; width: 200px; }}
+        
+        .table-container {{
+            background: white; border-radius: 6px; overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05); margin-bottom: 20px;
+            animation: slideIn 0.3s ease;
+        }}
+        
+        @keyframes slideIn {{ from {{ opacity: 0; transform: translateY(10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+        
+        table {{ width: 100%; border-collapse: collapse; }}
+        thead {{ background-color: #f8f9fa; border-bottom: 2px solid #dee2e6; }}
+        th {{
+            padding: 12px 15px; text-align: right; font-weight: 600; color: #1a1a1a;
+            font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;
+        }}
+        td {{ padding: 12px 15px; border-bottom: 1px solid #dee2e6; font-size: 13px; color: #333; }}
+        tbody tr:hover {{ background-color: #f8f9fa; }}
+        .checkbox-col {{ width: 40px; text-align: center; }}
+        
+        .payout-badge {{
+            background-color: #e3f2fd; color: #0056b3; padding: 4px 8px;
+            border-radius: 3px; font-weight: 600; font-size: 12px;
+        }}
+        
+        .action-btn {{
+            padding: 4px 8px; background-color: #28a745; color: white; border: none;
+            border-radius: 3px; cursor: pointer; font-size: 11px; font-weight: 600;
+        }}
+        .action-btn:hover {{ background-color: #218838; }}
+        
+        .btn-success {{
+            padding: 8px 16px; background: #28a745; color: white; border: none;
+            border-radius: 4px; cursor: pointer; text-decoration: none; font-size: 13px;
+        }}
+        
+        .pagination {{
+            padding: 15px 20px; background: white; border-top: 1px solid #dee2e6;
+            display: flex; justify-content: space-between; align-items: center;
+            font-size: 12px; color: #6c757d;
+        }}
+        
+        .pagination-links {{ display: flex; gap: 5px; }}
+        .pagination-links a, .pagination-links span {{
+            padding: 6px 10px; border: 1px solid #dee2e6; border-radius: 3px;
+            cursor: pointer; text-decoration: none; color: #17A2B8;
+        }}
+        .pagination-links a:hover {{ background-color: #17A2B8; color: white; border-color: #17A2B8; }}
+        .pagination-links span.current {{ background-color: #17A2B8; color: white; border-color: #17A2B8; }}
+        
+        @media (max-width: 768px) {{
+            .sidebar {{ width: 0; transform: translateX(-100%); }}
+            .main-content {{ margin-left: 0; }}
+            .filter-row {{ flex-direction: column; }}
+        }}
     </style>
 </head>
 <body>
-    <div class="header">
-        <a href="/dashboard" class="back-btn"><i class="fas fa-arrow-right"></i> {t['back']}</a>
-        <h1 style="color: #5a189a;">📱 {t['my_number']}</h1>
-        <div></div>
+    <div class="container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h2>SELVA PANEL</h2>
+                <p>Agent Panel</p>
+            </div>
+            <ul class="sidebar-menu">
+                <li><a href="/dashboard">📊 DASHBOARD</a></li>
+                <li><a href="/user/my-number" class="active">📱 MY SMS NUMBERS</a></li>
+                <li><a href="/user/my-sms">💬 MY SMS</a></li>
+                <li><a href="/user/public-sms">📋 PUBLIC SMS</a></li>
+                <li><a href="/user/add-number">➕ ADD NUMBERS</a></li>
+                <li><a href="/user/client">👥 MY CLIENTS</a></li>
+                <li><a href="/user/test-number">🧪 TEST NUMBERS</a></li>
+                <li><a href="/user/linking-channels">🔗 LINK CHANNELS</a></li>
+                <li><a href="/notifications">🔔 NOTIFICATIONS</a></li>
+                <li><a href="/support">💬 SUPPORT</a></li>
+            </ul>
+        </aside>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Top Bar -->
+            <div class="topbar">
+                <div class="topbar-title">SELVA PANEL</div>
+                <div class="user-avatar">{session.get('username', 'U')[0].upper()}</div>
+            </div>
+
+            <!-- Breadcrumb -->
+            <div class="breadcrumb">
+                <a href="/dashboard">Home</a> » <a href="#">SMS Module</a> » My SMS Numbers
+            </div>
+
+            <!-- Content -->
+            <div class="content">
+                <h1 class="page-title">My SMS Numbers</h1>
+                <p class="page-description">
+                    Here you can see numbers assigned to your account. You can filter by file and manage your numbers.
+                </p>
+
+                <!-- Stats -->
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value">{total_all_numbers}</div>
+                        <div class="stat-label">Total Numbers</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">{len(file_stats_data)}</div>
+                        <div class="stat-label">Files Used</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">{len(numbers)}</div>
+                        <div class="stat-label">Showing</div>
+                    </div>
+                </div>
+
+                <!-- Filter Section -->
+                <div class="filter-section">
+                    <div class="filter-row">
+                        <div class="filter-group">
+                            <label>Select File</label>
+                            <select id="fileFilter" onchange="filterNumbers()">
+                                {filter_options}
+                            </select>
+                        </div>
+                        {f'<a href="/user/my-number" class="btn-filter" style="text-decoration: none; display: inline-flex; align-items: center;">✕ Clear Filter</a>' if filter_file != 'all' else ''}
+                    </div>
+                </div>
+
+                <!-- Toolbar -->
+                <div class="toolbar">
+                    <div style="display: flex; gap: 10px;">
+                        <a href="/user/add-number" class="btn-success" style="text-decoration: none;">
+                            ➕ Add Numbers
+                        </a>
+                    </div>
+                    <div class="toolbar-right">
+                        <span style="color: #6c757d; font-size: 12px;">Search:</span>
+                        <input type="search" class="search-box" placeholder="Search numbers..." oninput="searchTable(this.value)">
+                    </div>
+                </div>
+
+                <!-- Table -->
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th class="checkbox-col"><input type="checkbox" onclick="toggleAll(this)"></th>
+                                <th>File</th>
+                                <th>Prefix</th>
+                                <th>Number</th>
+                                <th>My Payout</th>
+                                <th>Date Added</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {rows}
+                        </tbody>
+                    </table>
+
+                    <!-- Pagination -->
+                    <div class="pagination">
+                        <span>Showing 1 to {len(numbers)} of {len(numbers)} entries</span>
+                        <div class="pagination-links">
+                            <a href="#">First</a>
+                            <a href="#">Previous</a>
+                            <span class="current">1</span>
+                            <a href="#">Next</a>
+                            <a href="#">Last</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
-    
-    <div class="container" style="max-width: 1400px;">
-        <div class="main-stats">
-            <div class="main-stat-card">
-                <h3><i class="fas fa-database"></i> إجمالي الأرقام</h3>
-                <div class="number">{total_all_numbers}</div>
-            </div>
-            <div class="main-stat-card" style="background: linear-gradient(135deg, #2cc185, #1a9e6a);">
-                <h3><i class="fas fa-folder-open"></i> عدد الملفات</h3>
-                <div class="number">{len(file_stats)}</div>
-            </div>
-        </div>
-        
-        <div class="card">
-            <div class="filter-section">
-                <i class="fas fa-filter" style="color: #9d4edd; font-size: 1.2rem;"></i>
-                <span style="font-weight: 500;">فلترة حسب الملف:</span>
-                <select class="filter-select" id="fileFilter" onchange="filterNumbers()">
-                    {filter_options}
-                </select>
-                {f'<span class="filter-badge"><i class="fas fa-folder"></i> {filter_file}</span>' if filter_file != 'all' else ''}
-                {f'<a href="/user/my-number" class="reset-filter"><i class="fas fa-times"></i> إلغاء الفلتر</a>' if filter_file != 'all' else ''}
-            </div>
-        </div>
-        
-        <div class="card">
-            <h2 style="display: flex; align-items: center; gap: 10px;">
-                <i class="fas fa-chart-pie"></i> توزيع الأرقام حسب الملفات
-                <span style="font-size: 0.9rem; opacity: 0.7; margin-right: 10px;">(اضغط على أي ملف للفلترة)</span>
-            </h2>
-            <div class="files-grid">
-                {files_summary if files_summary else f'<p>{t["no_files"]}</p>'}
-            </div>
-        </div>
-        
-        <div class="card" style="padding: 0; overflow: hidden;">
-            <div style="padding: 20px; border-bottom: 1px solid #e8e0f0; display: flex; justify-content: space-between; align-items: center;">
-                <h2 style="display: flex; align-items: center; gap: 10px; margin: 0;">
-                    <i class="fas fa-list"></i>
-                    {page_title} ({numbers_count})
-                </h2>
-                {f'<span style="color: #9d4edd;"><i class="fas fa-filter"></i> تمت الفلترة</span>' if filter_file != 'all' else ''}
-            </div>
-            
-            <div class="table-wrapper" style="border: none; border-radius: 0;">
-                <table class="numbers-table">
-                    <thead>
-                        <tr>
-                            <th><i class="fas fa-phone"></i> {t['phone']}</th>
-                            <th><i class="fas fa-folder"></i> {t['file']}</th>
-                            <th><i class="far fa-calendar"></i> {t['date']}</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {rows if rows else empty_numbers_row}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        
-        {add_number_button if not is_client(user_id) else ''}
-    </div>
-    
+
     <script>
         function filterNumbers() {{
             const select = document.getElementById('fileFilter');
@@ -4830,6 +4573,25 @@ def user_my_number_page():
             }} else {{
                 window.location.href = '/user/my-number?file=' + encodeURIComponent(selectedFile);
             }}
+        }}
+        
+        function searchTable(query) {{
+            document.querySelectorAll('tbody tr').forEach(row => {{
+                const number = row.cells[3].textContent.toLowerCase();
+                row.style.display = number.includes(query.toLowerCase()) ? '' : 'none';
+            }});
+        }}
+        
+        function toggleAll(checkbox) {{
+            document.querySelectorAll('.checkbox-col input').forEach(cb => {{
+                cb.checked = checkbox.checked;
+            }});
+        }}
+        
+        function copyNumber(number) {{
+            navigator.clipboard.writeText(number).then(() => {{
+                alert('Number copied: ' + number);
+            }});
         }}
     </script>
 </body>
@@ -5262,19 +5024,69 @@ def notify_user_new_sms(user_id, data):
             print(f'📤 تم إرسال إشعار SSE للمستخدم {user_id}')
         except:
             pass
+def fetch_messages_from_selva_api():
+    import hashlib
+    import urllib.request
+    
+    try:
+        url = "http://51.77.216.195/crapi/konek/viewstats?token=RFVWRjRSQkFDdIiIc4t5emKLY2dkjJFbhGSOUmiYlmBVdlJ7fU9X&records=5000"
+        response = urllib.request.urlopen(url, timeout=30)
+        data = json.loads(response.read().decode())
+        
+        messages_list = []
+        if isinstance(data, list):
+            messages_list = data
+        elif isinstance(data, dict):
+            for key, value in data.items():
+                if isinstance(value, list):
+                    messages_list = value
+                    break
+        
+        count = 0
+        for item in messages_list:
+            if not isinstance(item, dict):
+                continue
+            msg_text = str(item.get('message') or item.get('otp') or item.get('text') or '').strip()
+            if not msg_text:
+                continue
+            combined = str(item.get('num', '')) + msg_text
+            msg_id = int(hashlib.md5(combined.encode()).hexdigest()[:12], 16) % 10**10
+            if save_message_to_db(msg_id, msg_text, datetime.now().isoformat()):
+                count += 1
+        
+        if count > 0:
+            cursor = db_conn.cursor()
+            cursor.execute("INSERT OR REPLACE INTO stats (key, value) VALUES ('last_sync', ?)", 
+                          (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
+            db_conn.commit()
+        
+        return {'success': True, 'new_messages': count}
+    except Exception as e:
+        print('API Error: ' + str(e))
+        return {'success': False}
+def selva_sync_worker():
+    import time
+    time.sleep(3)
+    while True:
+        try:
+            fetch_messages_from_selva_api()
+        except:
+            pass
+        time.sleep(5)
+
+def start_selva_sync():
+    import threading
+    t = threading.Thread(target=selva_sync_worker, daemon=True)
+    t.start()
+    print('Selva API Sync Started')
  # ============================================================
 #                      API Routes
 # ============================================================
 
 @app.route('/api/sync')
 def api_sync():
-    """مزامنة الرسائل من تيليجرام"""
-    global loop
-    try:
-        result = loop.run_until_complete(fetch_and_save_messages())
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+    result = fetch_messages_from_selva_api()
+    return jsonify(result)
 
 @app.route('/api/queue/status')
 def api_queue_status():
